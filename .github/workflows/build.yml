@@ -1,4 +1,4 @@
-name: Build Wheels
+name: Build and Release
 
 on:
   push:
@@ -9,9 +9,86 @@ on:
     types: [published]
 
 jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version bump
+        id: bump
+        run: |
+          # Get the latest tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          VERSION=${LATEST_TAG#v}
+
+          # Parse version components
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # Get commits since last tag
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log --oneline)
+          else
+            COMMITS=$(git log ${LATEST_TAG}..HEAD --oneline)
+          fi
+
+          # Check for version bump indicators
+          if echo "$COMMITS" | grep -qi '#major'; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS" | grep -qi '#minor'; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
+
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${NEW_TAG}" >> $GITHUB_OUTPUT
+          echo "New version: ${NEW_VERSION}"
+
+      - name: Update Cargo.toml
+        run: |
+          sed -i.bak "s/^version = .*/version = \"${{ steps.bump.outputs.version }}\"/" Cargo.toml
+          rm Cargo.toml.bak
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git diff --staged --quiet || git commit -m "Bump version to ${{ steps.bump.outputs.version }}"
+          git push
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.bump.outputs.tag }}
+          name: Release ${{ steps.bump.outputs.tag }}
+          generate_release_notes: true
+
   build-wheels:
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    needs: [release]
+    if: |
+      always() && 
+      (needs.release.result == 'success' || 
+       github.event_name == 'release' || 
+       github.event_name == 'pull_request')
     strategy:
       matrix:
         include:
@@ -43,6 +120,12 @@ jobs:
   test:
     name: Test on ${{ matrix.os }} with Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
+    needs: [release]
+    if: |
+      always() && 
+      (needs.release.result == 'success' || 
+       github.event_name == 'release' || 
+       github.event_name == 'pull_request')
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -76,8 +159,8 @@ jobs:
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [build-wheels, test]
-    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: [build-wheels, test, release]
+    if: (github.event_name == 'release' && github.event.action == 'published') || (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'))
     permissions:
       id-token: write
 
