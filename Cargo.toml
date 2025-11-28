@@ -8,5 +8,5 @@ name = "dustr"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.20", features = ["extension-module"] }
+pyo3 = { version = "0.27", features = ["extension-module"] }
 walkdir = "2.4"
