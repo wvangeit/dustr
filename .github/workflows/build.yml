@@ -103,6 +103,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Pull latest changes
+        if: needs.release.result == 'success'
+        run: git pull origin ${{ github.ref_name }}
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -133,6 +140,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Pull latest changes
+        if: needs.release.result == 'success'
+        run: git pull origin ${{ github.ref_name }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
