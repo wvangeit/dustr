@@ -85,7 +85,7 @@ fn get_file_type_indicator(path: &str) -> PyResult<String> {
 
 /// Python module definition
 #[pymodule]
-fn _dustr(_py: Python, m: &PyModule) -> PyResult<()> {
+fn _dustr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calculate_directory_sizes, m)?)?;
     m.add_function(wrap_pyfunction!(get_file_type_indicator, m)?)?;
     Ok(())
