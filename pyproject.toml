@@ -1,0 +1,31 @@
+[project]
+name = "dustr"
+description = "Rust-based disk usage analyzer with histogram visualization"
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE.txt"]
+authors = [
+    {name="Werner Van Geit"}
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dynamic = ["version"]
+classifiers = [
+    "Topic :: Utilities",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3"
+]
+
+[project.scripts]
+dustr = "dustr:main"
+
+[project.urls]
+homepage = "https://github.com/wvangeit/dustr"
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "python"
+module-name = "dustr._dustr"
+features = ["pyo3/extension-module"]
