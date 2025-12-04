@@ -26,9 +26,16 @@ fn calculate_directory_sizes(path: &str, use_inodes: bool) -> PyResult<HashMap<S
         }
     };
 
-    for entry in entries.flatten() {
+    // Collect entries first to get count
+    let entries_vec: Vec<_> = entries.flatten().collect();
+    let total_entries = entries_vec.len();
+    
+    for (idx, entry) in entries_vec.into_iter().enumerate() {
         let file_name = entry.file_name().to_string_lossy().to_string();
         let file_path = entry.path();
+
+        // Show progress bar
+        print_progress(idx, total_entries);
 
         let size = if use_inodes {
             // Count inodes (files + directories)
@@ -47,8 +54,32 @@ fn calculate_directory_sizes(path: &str, use_inodes: bool) -> PyResult<HashMap<S
 
         sizes.insert(file_name, size);
     }
+    
+    // Clear progress bar
+    print!("\r{}\r", " ".repeat(50));
+    io::stdout().flush().ok();
 
     Ok(sizes)
+}
+
+/// Print a progress bar
+fn print_progress(current: usize, total: usize) {
+    let bar_width = 40;
+    let progress = if total > 0 { 
+        current as f64 / total as f64 
+    } else { 
+        0.0 
+    };
+    let filled = (bar_width as f64 * progress) as usize;
+    let empty = bar_width - filled;
+    
+    print!("\r[{}{}] {}/{}", 
+        ">".repeat(filled),
+        "-".repeat(empty),
+        current,
+        total
+    );
+    io::stdout().flush().ok();
 }
 
 /// Calculate total size in kilobytes for a file or directory
