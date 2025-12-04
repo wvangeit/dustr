@@ -85,6 +85,28 @@ fn get_file_type_indicator(path: &str) -> PyResult<String> {
 }
 
 /// Format a number with thousand separators
+/// Format size with units (K, M, G)
+fn format_size(size_kb: u64) -> String {
+    if size_kb >= 1_000_000_000 {
+        // Terabytes
+        let tb = size_kb as f64 / 1_000_000_000.0;
+        format!("{:.1} Tb", tb)
+    } else if size_kb >= 1_000_000 {
+        // Gigabytes
+        let gb = size_kb as f64 / 1_000_000.0;
+        format!("{:.1} Gb", gb)
+    } else if size_kb >= 1_000 {
+        // Megabytes
+        let mb = size_kb as f64 / 1_000.0;
+        format!("{:.2} Mb", mb)
+    } else {
+        let kb = size_kb as f64;
+        // Kilobytes
+        format!("{:.1} Kb", kb)
+    }
+}
+
+/// Format a number with thousand separators (for legacy support)
 fn format_with_grouping(num: u64) -> String {
     let s = num.to_string();
     let mut result = String::new();
@@ -92,7 +114,7 @@ fn format_with_grouping(num: u64) -> String {
     
     for (i, c) in s.chars().enumerate() {
         if i > 0 && (len - i) % 3 == 0 {
-            result.push(',');
+            result.push('\'');
         }
         result.push(c);
     }
@@ -167,10 +189,10 @@ fn print_disk_usage(
 
     // Print header
     println!("\n\nStatistics of directory \"{}\" :\n", dirname);
-    let col0_name = if inodes { "inodes" } else { "in kByte" };
+    let col0_name = if inodes { "inodes" } else { "Size" };
     println!(
         "{:<14} {:<6} {:<20} {:<10}",
-        col0_name, "in %", "histogram", "name"
+        col0_name, "In %", "Histogram", "Name"
     );
 
     // Print errors
@@ -193,10 +215,16 @@ fn print_disk_usage(
             100.0
         };
 
-        let size_str = if no_grouping {
-            file_size.to_string()
+        let size_str = if inodes {
+            // For inodes, use the old format with grouping
+            if no_grouping {
+                file_size.to_string()
+            } else {
+                format_with_grouping(*file_size)
+            }
         } else {
-            format_with_grouping(*file_size)
+            // For sizes, use K/M/G format
+            format_size(*file_size)
         };
 
         let histogram = "#".repeat(nmarks);
@@ -208,12 +236,16 @@ fn print_disk_usage(
     }
 
     // Print footer
-    let total_str = if no_grouping {
-        total_size.to_string()
+    let total_str = if inodes {
+        if no_grouping {
+            total_size.to_string()
+        } else {
+            format_with_grouping(total_size)
+        }
     } else {
-        format_with_grouping(total_size)
+        format_size(total_size)
     };
-    println!("\nTotal directory size: {} kByte\n", total_str);
+    println!("\nTotal directory size: {}\n", total_str);
 
     if permission_error {
         eprintln!("The Ducky has no permission to access certain subdirectories !\n");
