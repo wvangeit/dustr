@@ -85,7 +85,7 @@ fn get_file_type_indicator(path: &str) -> PyResult<String> {
 }
 
 /// Format a number with thousand separators
-/// Format size with units (K, M, G)
+/// Format size with units (K, M, G, T)
 fn format_size(size_kb: u64) -> String {
     if size_kb >= 1_000_000_000 {
         // Terabytes
