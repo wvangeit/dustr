@@ -7,7 +7,7 @@ use walkdir::WalkDir;
 
 /// Calculate directory sizes for all items in a directory
 #[pyfunction]
-fn calculate_directory_sizes(path: &str, use_inodes: bool) -> PyResult<HashMap<String, u64>> {
+fn calculate_directory_sizes(py: Python, path: &str, use_inodes: bool) -> PyResult<HashMap<String, u64>> {
     let mut sizes: HashMap<String, u64> = HashMap::new();
     let base_path = Path::new(path);
 
@@ -26,29 +26,65 @@ fn calculate_directory_sizes(path: &str, use_inodes: bool) -> PyResult<HashMap<S
         }
     };
 
-    for entry in entries.flatten() {
+    // Collect entries first to get count
+    let entries_vec: Vec<_> = entries.flatten().collect();
+    let total_entries = entries_vec.len();
+    
+    for (idx, entry) in entries_vec.into_iter().enumerate() {
+        // Check for Python signals (like Ctrl+C)
+        if let Err(e) = py.check_signals() {
+            // Clear progress bar before returning error
+            print!("\r{}\r", " ".repeat(50));
+            io::stdout().flush().ok();
+            return Err(e);
+        }
+        
         let file_name = entry.file_name().to_string_lossy().to_string();
         let file_path = entry.path();
+
+        // Show progress bar
+        print_progress(idx, total_entries);
 
         let size = if use_inodes {
             // Count inodes (files + directories)
             if file_path.is_dir() {
-                WalkDir::new(&file_path)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                    .count() as u64
+                count_inodes_with_cancel(py, &file_path)?
             } else {
                 1
             }
         } else {
             // Calculate size in kilobytes
-            calculate_size_kb(&file_path)
+            calculate_size_kb_with_cancel(py, &file_path)?
         };
 
         sizes.insert(file_name, size);
     }
+    
+    // Clear progress bar
+    print!("\r{}\r", " ".repeat(50));
+    io::stdout().flush().ok();
 
     Ok(sizes)
+}
+
+/// Print a progress bar
+fn print_progress(current: usize, total: usize) {
+    let bar_width = 40;
+    let progress = if total > 0 { 
+        current as f64 / total as f64 
+    } else { 
+        0.0 
+    };
+    let filled = (bar_width as f64 * progress) as usize;
+    let empty = bar_width - filled;
+    
+    print!("\r[{}{}] {}/{}", 
+        ">".repeat(filled),
+        "-".repeat(empty),
+        current,
+        total
+    );
+    io::stdout().flush().ok();
 }
 
 /// Calculate total size in kilobytes for a file or directory
@@ -68,6 +104,52 @@ fn calculate_size_kb(path: &Path) -> u64 {
     } else {
         0
     }
+}
+
+/// Calculate total size in kilobytes for a file or directory with cancellation support
+fn calculate_size_kb_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
+    if path.is_file() {
+        Ok(fs::metadata(path)
+            .map(|m| (m.len() + 1023) / 1024) // Round up to KB
+            .unwrap_or(0))
+    } else if path.is_dir() {
+        let mut total: u64 = 0;
+        let mut count = 0;
+        for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+            // Check for interrupts every 100 files
+            count += 1;
+            if count % 100 == 0 {
+                py.check_signals()?;
+            }
+            
+            if entry.path().is_file() {
+                if let Ok(metadata) = fs::metadata(entry.path()) {
+                    total += (metadata.len() + 1023) / 1024;
+                }
+            }
+        }
+        Ok(total)
+    } else {
+        Ok(0)
+    }
+}
+
+/// Count inodes with cancellation support
+fn count_inodes_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
+    let mut count = 0u64;
+    let mut iter_count = 0;
+    
+    for _ in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        count += 1;
+        iter_count += 1;
+        
+        // Check for interrupts every 100 items
+        if iter_count % 100 == 0 {
+            py.check_signals()?;
+        }
+    }
+    
+    Ok(count)
 }
 
 /// Get file type indicator (@ for symlinks, / for directories, empty for files)
@@ -126,6 +208,7 @@ fn format_with_grouping(num: u64) -> String {
 #[pyfunction]
 #[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false))]
 fn print_disk_usage(
+    py: Python,
     dirname: &str,
     inodes: bool,
     no_grouping: bool,
@@ -155,7 +238,7 @@ fn print_disk_usage(
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut permission_error = false;
 
-    match calculate_directory_sizes(dirname, inodes) {
+    match calculate_directory_sizes(py, dirname, inodes) {
         Ok(raw_sizes) => {
             for (filename, size) in raw_sizes {
                 let mut display_name = filename.clone();
@@ -171,6 +254,12 @@ fn print_disk_usage(
             }
         }
         Err(e) => {
+            // Check if it's a keyboard interrupt
+            if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
+                // Just return the error without printing anything
+                return Err(e);
+            }
+            
             let error_msg = e.to_string();
             if error_msg.contains("Permission denied") {
                 errors.push(("Permission denied".to_string(), "<root>".to_string()));
@@ -188,7 +277,7 @@ fn print_disk_usage(
     let max_size = file_sizes.iter().map(|(_, s)| s).max().copied().unwrap_or(0);
 
     // Print header
-    println!("\n\nStatistics of directory \"{}\" :\n", dirname);
+    println!("Statistics of directory \"{}\" :\n", dirname);
     let col0_name = if inodes { "inodes" } else { "Size" };
     println!(
         "{:<14} {:<6} {:<20} {:<10}",
@@ -196,7 +285,6 @@ fn print_disk_usage(
     );
 
     // Print errors
-    let fmt_error = format!("{{:<{}}}", 22 + max_marks);
     for (error, filename) in &errors {
         println!("{} {:<10}", format!("{:<width$}", error, width = 22 + max_marks), filename);
     }
@@ -245,7 +333,7 @@ fn print_disk_usage(
     } else {
         format_size(total_size)
     };
-    println!("\nTotal directory size: {}\n", total_str);
+    println!("\nTotal directory size: {}", total_str);
 
     if permission_error {
         eprintln!("The Ducky has no permission to access certain subdirectories !\n");
@@ -290,10 +378,8 @@ fn main(py: Python, args: Vec<String>) -> PyResult<()> {
         }
     }
 
-    // Allow Ctrl+C
-    py.allow_threads(|| {
-        print_disk_usage(&dirname, inodes, no_grouping, no_f)
-    })
+    // Allow Ctrl+C by releasing GIL
+    print_disk_usage(py, &dirname, inodes, no_grouping, no_f)
 }
 
 /// Python module definition

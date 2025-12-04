@@ -19,11 +19,11 @@ def main():
     try:
         rust_main(sys.argv[1:])
     except KeyboardInterrupt:
-        print("\nThe Duck was shot by the user !")
+        print("\nThe Dustr was shot by the user !")
         warnings.filterwarnings("ignore")
         sys.exit(1)
-    except Exception as e:
-        print("Sorry, the Duck was eaten by the Python !\nReason:", sys.exc_info()[0])
+    except Exception as e:  # pylint: disable=broad-except
+        print("Sorry, the Dustr was eaten by the Python !\nReason:", sys.exc_info()[0])
         if isinstance(e, SystemExit):
             raise
 
