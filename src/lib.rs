@@ -277,7 +277,7 @@ fn print_disk_usage(
     let max_size = file_sizes.iter().map(|(_, s)| s).max().copied().unwrap_or(0);
 
     // Print header
-    println!("\n\nStatistics of directory \"{}\" :\n", dirname);
+    println!("Statistics of directory \"{}\" :\n", dirname);
     let col0_name = if inodes { "inodes" } else { "Size" };
     println!(
         "{:<14} {:<6} {:<20} {:<10}",
@@ -333,7 +333,7 @@ fn print_disk_usage(
     } else {
         format_size(total_size)
     };
-    println!("\nTotal directory size: {}\n", total_str);
+    println!("\nTotal directory size: {}", total_str);
 
     if permission_error {
         eprintln!("The Ducky has no permission to access certain subdirectories !\n");
