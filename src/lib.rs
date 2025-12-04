@@ -98,7 +98,7 @@ fn format_size(size_kb: u64) -> String {
     } else if size_kb >= 1_000 {
         // Megabytes
         let mb = size_kb as f64 / 1_000.0;
-        format!("{:.2} Mb", mb)
+        format!("{:.1} Mb", mb)
     } else {
         let kb = size_kb as f64;
         // Kilobytes
