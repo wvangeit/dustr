@@ -93,25 +93,6 @@ fn print_progress(current: usize, total: usize) {
     io::stdout().flush().ok();
 }
 
-/// Calculate total size in kilobytes for a file or directory
-fn calculate_size_kb(path: &Path) -> u64 {
-    if path.is_file() {
-        fs::metadata(path)
-            .map(|m| (m.len() + 1023) / 1024) // Round up to KB
-            .unwrap_or(0)
-    } else if path.is_dir() {
-        WalkDir::new(path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_file())
-            .filter_map(|e| fs::metadata(e.path()).ok())
-            .map(|m| (m.len() + 1023) / 1024)
-            .sum()
-    } else {
-        0
-    }
-}
-
 /// Calculate total size in kilobytes for a file or directory with cancellation support
 fn calculate_size_kb_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
     if path.is_file() {
