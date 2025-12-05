@@ -1,14 +1,18 @@
+use clap::Parser;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use walkdir::WalkDir;
-use clap::Parser;
 
 /// Calculate directory sizes for all items in a directory
 #[pyfunction]
-fn calculate_directory_sizes(py: Python, path: &str, use_inodes: bool) -> PyResult<HashMap<String, u64>> {
+fn calculate_directory_sizes(
+    py: Python,
+    path: &str,
+    use_inodes: bool,
+) -> PyResult<HashMap<String, u64>> {
     let mut sizes: HashMap<String, u64> = HashMap::new();
     let base_path = Path::new(path);
 
@@ -30,7 +34,7 @@ fn calculate_directory_sizes(py: Python, path: &str, use_inodes: bool) -> PyResu
     // Collect entries first to get count
     let entries_vec: Vec<_> = entries.flatten().collect();
     let total_entries = entries_vec.len();
-    
+
     for (idx, entry) in entries_vec.into_iter().enumerate() {
         // Check for Python signals (like Ctrl+C)
         if let Err(e) = py.check_signals() {
@@ -39,7 +43,7 @@ fn calculate_directory_sizes(py: Python, path: &str, use_inodes: bool) -> PyResu
             io::stdout().flush().ok();
             return Err(e);
         }
-        
+
         let file_name = entry.file_name().to_string_lossy().to_string();
         let file_path = entry.path();
 
@@ -60,7 +64,7 @@ fn calculate_directory_sizes(py: Python, path: &str, use_inodes: bool) -> PyResu
 
         sizes.insert(file_name, size);
     }
-    
+
     // Clear progress bar
     print!("\r{}\r", " ".repeat(50));
     io::stdout().flush().ok();
@@ -71,15 +75,16 @@ fn calculate_directory_sizes(py: Python, path: &str, use_inodes: bool) -> PyResu
 /// Print a progress bar
 fn print_progress(current: usize, total: usize) {
     let bar_width = 40;
-    let progress = if total > 0 { 
-        current as f64 / total as f64 
-    } else { 
-        0.0 
+    let progress = if total > 0 {
+        current as f64 / total as f64
+    } else {
+        0.0
     };
     let filled = (bar_width as f64 * progress) as usize;
     let empty = bar_width - filled;
-    
-    print!("\r[{}{}] {}/{}", 
+
+    print!(
+        "\r[{}{}] {}/{}",
         ">".repeat(filled),
         "-".repeat(empty),
         current,
@@ -122,7 +127,7 @@ fn calculate_size_kb_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
             if count % 100 == 0 {
                 py.check_signals()?;
             }
-            
+
             if entry.path().is_file() {
                 if let Ok(metadata) = fs::metadata(entry.path()) {
                     total += (metadata.len() + 1023) / 1024;
@@ -139,17 +144,17 @@ fn calculate_size_kb_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
 fn count_inodes_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
     let mut count = 0u64;
     let mut iter_count = 0;
-    
+
     for _ in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
         count += 1;
         iter_count += 1;
-        
+
         // Check for interrupts every 100 items
         if iter_count % 100 == 0 {
             py.check_signals()?;
         }
     }
-    
+
     Ok(count)
 }
 
@@ -157,7 +162,7 @@ fn count_inodes_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
 #[pyfunction]
 fn get_file_type_indicator(path: &str) -> PyResult<String> {
     let p = Path::new(path);
-    
+
     if p.is_symlink() {
         Ok("@".to_string())
     } else if p.is_dir() {
@@ -194,14 +199,14 @@ fn format_with_grouping(num: u64) -> String {
     let s = num.to_string();
     let mut result = String::new();
     let len = s.len();
-    
+
     for (i, c) in s.chars().enumerate() {
         if i > 0 && (len - i) % 3 == 0 {
             result.push('\'');
         }
         result.push(c);
     }
-    
+
     result
 }
 
@@ -216,20 +221,24 @@ fn print_disk_usage(
     no_f: bool,
 ) -> PyResult<()> {
     let max_marks = 20;
-    
+
     // Verify directory exists and is accessible
     match fs::read_dir(dirname) {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            eprintln!("Permission denied: Unable to access directory '{}'", dirname);
+            eprintln!(
+                "Permission denied: Unable to access directory '{}'",
+                dirname
+            );
             return Err(PyErr::new::<pyo3::exceptions::PyPermissionError, _>(
-                "Permission denied"
+                "Permission denied",
             ));
         }
         Err(e) => {
             eprintln!("Error accessing directory '{}': {}", dirname, e);
-            return Err(PyErr::new::<pyo3::exceptions::PyOSError, _>(
-                format!("Error accessing directory: {}", e)
-            ));
+            return Err(PyErr::new::<pyo3::exceptions::PyOSError, _>(format!(
+                "Error accessing directory: {}",
+                e
+            )));
         }
         Ok(_) => {}
     }
@@ -243,14 +252,14 @@ fn print_disk_usage(
         Ok(raw_sizes) => {
             for (filename, size) in raw_sizes {
                 let mut display_name = filename.clone();
-                
+
                 if !no_f {
                     let full_path = Path::new(dirname).join(&filename);
                     if let Ok(indicator) = get_file_type_indicator(&full_path.to_string_lossy()) {
                         display_name.push_str(&indicator);
                     }
                 }
-                
+
                 file_sizes.push((display_name, size));
             }
         }
@@ -260,7 +269,7 @@ fn print_disk_usage(
                 // Just return the error without printing anything
                 return Err(e);
             }
-            
+
             let error_msg = e.to_string();
             if error_msg.contains("Permission denied") {
                 errors.push(("Permission denied".to_string(), "<root>".to_string()));
@@ -275,7 +284,12 @@ fn print_disk_usage(
     file_sizes.sort_by_key(|k| k.1);
 
     let total_size: u64 = file_sizes.iter().map(|(_, s)| s).sum();
-    let max_size = file_sizes.iter().map(|(_, s)| s).max().copied().unwrap_or(0);
+    let max_size = file_sizes
+        .iter()
+        .map(|(_, s)| s)
+        .max()
+        .copied()
+        .unwrap_or(0);
 
     // Print header
     println!("Statistics of directory \"{}\" :\n", dirname);
@@ -287,7 +301,11 @@ fn print_disk_usage(
 
     // Print errors
     for (error, filename) in &errors {
-        println!("{} {:<10}", format!("{:<width$}", error, width = 22 + max_marks), filename);
+        println!(
+            "{} {:<10}",
+            format!("{:<width$}", error, width = 22 + max_marks),
+            filename
+        );
     }
 
     // Print files
@@ -297,13 +315,12 @@ fn print_disk_usage(
         } else {
             max_marks
         };
-        
+
         let percentage = if total_size != 0 {
             100.0 * (*file_size as f64) / (total_size as f64)
         } else {
             100.0
         };
-
         let size_str = if inodes {
             // For inodes, use the old format with grouping
             if no_grouping {
@@ -317,7 +334,7 @@ fn print_disk_usage(
         };
 
         let histogram = "#".repeat(nmarks);
-        
+
         println!(
             "{:<14} {:<6.2} {:<20} {:<10}",
             size_str, percentage, histogram, filename
