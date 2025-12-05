@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use walkdir::WalkDir;
+use clap::Parser;
 
 /// Calculate directory sizes for all items in a directory
 #[pyfunction]
@@ -336,50 +337,50 @@ fn print_disk_usage(
     println!("\nTotal directory size: {}", total_str);
 
     if permission_error {
-        eprintln!("The Ducky has no permission to access certain subdirectories !\n");
+        eprintln!("The Dustr has no permission to access certain subdirectories !\n");
     }
 
     Ok(())
+}
+
+/// Command-line arguments structure
+#[derive(Parser)]
+#[command(name = "dustr")]
+#[command(about = "Show disk usage statistics", long_about = None)]
+struct Cli {
+    /// Directory to analyze
+    #[arg(default_value = ".")]
+    dirname: String,
+
+    /// Count inodes instead of disk usage
+    #[arg(long)]
+    inodes: bool,
+
+    /// Don't use thousand separators
+    #[arg(long)]
+    nogrouping: bool,
+
+    /// Don't append file type indicators
+    #[arg(long = "noF")]
+    no_f: bool,
 }
 
 /// Main entry point for the dustr command
 #[pyfunction]
 #[pyo3(signature = (args=vec![]))]
 fn main(py: Python, args: Vec<String>) -> PyResult<()> {
-    // Parse arguments from Python
-    
-    let mut dirname = ".".to_string();
-    let mut inodes = false;
-    let mut no_grouping = false;
-    let mut no_f = false;
-    
-    for arg in args.iter() {
-        match arg.as_str() {
-            "--inodes" => inodes = true,
-            "--nogrouping" => no_grouping = true,
-            "--noF" => no_f = true,
-            "--help" | "-h" => {
-                println!("Show disk usage statistics (Rust implementation)");
-                println!("\nUsage: dustr [OPTIONS] [DIRNAME]\n");
-                println!("Options:");
-                println!("  --inodes      Count inodes instead of disk usage");
-                println!("  --nogrouping  Don't use thousand separators");
-                println!("  --noF         Don't append file type indicators");
-                println!("  -h, --help    Show this help message");
-                return Ok(());
-            }
-            arg if !arg.starts_with("-") => {
-                // This is the directory argument
-                dirname = arg.to_string();
-            }
-            _ => {
-                // Unknown flag, ignore
-            }
+    // Parse arguments using clap
+    let cli = match Cli::try_parse_from(std::iter::once("dustr".to_string()).chain(args)) {
+        Ok(cli) => cli,
+        Err(e) => {
+            // Print clap's error message (includes help text for --help)
+            eprintln!("{}", e);
+            return Ok(());
         }
-    }
+    };
 
     // Allow Ctrl+C by releasing GIL
-    print_disk_usage(py, &dirname, inodes, no_grouping, no_f)
+    print_disk_usage(py, &cli.dirname, cli.inodes, cli.nogrouping, cli.no_f)
 }
 
 /// Python module definition
