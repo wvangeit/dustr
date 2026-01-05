@@ -61,10 +61,33 @@ dustr [directory]
 
 Options:
 
-- `--nogrouping`: Don't group thousands with commas
-- `--noprogress`: Don't show progress bar (note: Rust version calculates all at once, so this has less effect)
-- `--inodes`: Show inode count instead of size
-- `--noF`: Don't add file type indicators (/ for directories, @ for symlinks)
+- `--help`: Show help message
+- `--version`: Show version information
+- `--inodes`: Count inodes instead of measuring disk usage
+- `--sort`: Sort by size
+- `--reverse`: Reverse sort order
+
+### Man Page
+
+After installation, you can view the man page with:
+
+```bash
+dustr-man
+```
+
+Or if the man page is in your system's MANPATH:
+
+```bash
+man dustr
+```
+
+To install the man page to your local man directory for system-wide access:
+
+```bash
+mkdir -p ~/.local/share/man/man1
+cp $(python3 -c "import sysconfig, os; print(os.path.join(sysconfig.get_path('data'), 'share', 'man', 'man1', 'dustr.1'))") ~/.local/share/man/man1/
+mandb  # Update man database (may require sudo on some systems)
+```
 
 ## Differences from duk
 

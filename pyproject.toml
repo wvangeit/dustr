@@ -20,19 +20,17 @@ man = []
 
 [project.scripts]
 dustr = "dustr:main"
+dustr-man = "dustr:show_man"
 
 [project.urls]
 homepage = "https://github.com/wvangeit/dustr"
 
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.0,<2.0", "setuptools>=40.6.0"]
 build-backend = "maturin"
 
 [tool.maturin]
 python-source = "python"
 module-name = "dustr._dustr"
 features = ["pyo3/extension-module"]
-
-# Include man page in the distribution
-[tool.maturin.data]
-"man/dustr.1" = "share/man/man1/dustr.1"
+include = ["man/dustr.1"]
