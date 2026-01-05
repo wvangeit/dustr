@@ -1,0 +1,89 @@
+.TH DUSTR 1 "January 2026" "dustr 0.1.9" "User Commands"
+.SH NAME
+dustr \- Rust-based disk usage analyzer with histogram visualization
+.SH SYNOPSIS
+.B dustr
+[\fIOPTIONS\fR] [\fIDIRECTORY\fR]
+.SH DESCRIPTION
+.B dustr
+is a Rust-based implementation of duk, a command-line utility that shows disk usage statistics in a directory with a histogram visualization. It provides improved performance over the original Python implementation while maintaining the same functionality.
+.PP
+The tool displays a histogram of disk usage for all items in a directory, showing the size of each file and subdirectory along with a visual representation of their relative sizes.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print help information and exit
+.TP
+.BR \-V ", " \-\-version
+Print version information and exit
+.TP
+.BR \-i ", " \-\-inodes
+Count inodes (files and directories) instead of measuring disk usage in kilobytes
+.TP
+.BR \-s ", " \-\-sort
+Sort output by size in ascending order (default is to sort by name)
+.TP
+.BR \-r ", " \-\-reverse
+Reverse the sort order
+.SH ARGUMENTS
+.TP
+.I DIRECTORY
+The directory to analyze (default: current directory)
+.SH EXAMPLES
+.PP
+Show disk usage for the current directory:
+.PP
+.RS
+.B dustr
+.RE
+.PP
+Show disk usage for a specific directory:
+.PP
+.RS
+.B dustr /path/to/directory
+.RE
+.PP
+Count inodes instead of disk usage:
+.PP
+.RS
+.B dustr \-\-inodes
+.RE
+.PP
+Sort by size in descending order:
+.PP
+.RS
+.B dustr \-\-sort \-\-reverse
+.RE
+.SH OUTPUT
+The output displays:
+.IP \(bu 2
+Size in kBytes (or inode count with \-\-inodes)
+.IP \(bu 2
+Percentage of total usage
+.IP \(bu 2
+Histogram visualization using '#' characters
+.IP \(bu 2
+Name of the file or directory
+.PP
+At the end, the total directory size is displayed.
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+An error occurred (e.g., permission denied, directory not found, user interrupted)
+.SH AUTHOR
+Written by Werner Van Geit
+.SH COPYRIGHT
+Copyright \(co 2026 Werner Van Geit
+.br
+Licensed under the GNU Lesser General Public License v3.0 or later.
+.SH SEE ALSO
+.BR du (1),
+.BR df (1),
+.BR ls (1)
+.SH BUGS
+Report bugs to: https://github.com/wvangeit/dustr/issues
+.SH HOMEPAGE
+https://github.com/wvangeit/dustr

@@ -15,6 +15,9 @@ classifiers = [
     "Programming Language :: Python :: 3"
 ]
 
+[project.optional-dependencies]
+man = []
+
 [project.scripts]
 dustr = "dustr:main"
 
@@ -29,3 +32,7 @@ build-backend = "maturin"
 python-source = "python"
 module-name = "dustr._dustr"
 features = ["pyo3/extension-module"]
+
+# Include man page in the distribution
+[tool.maturin.data]
+"man/dustr.1" = "share/man/man1/dustr.1"
