@@ -351,15 +351,15 @@ struct Cli {
     dirname: String,
 
     /// Count inodes instead of disk usage
-    #[arg(long)]
+    #[arg(short, long)]
     inodes: bool,
 
     /// Don't use thousand separators
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     nogrouping: bool,
 
     /// Don't append file type indicators
-    #[arg(long = "noF")]
+    #[arg(short = 'f', long = "noF")]
     no_f: bool,
 }
 
