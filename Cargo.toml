@@ -11,3 +11,6 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.27", features = ["extension-module"] }
 walkdir = "2.4"
 clap = { version = "4.5", features = ["derive"] }
+rayon = "1.10"
+jwalk = "0.8"
+parking_lot = "0.12"
