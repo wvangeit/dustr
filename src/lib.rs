@@ -135,7 +135,7 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
     let mut total: u64 = 0;
     let mut count = 0;
     for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
+        .parallelism(jwalk::Parallelism::RayonDefaultPool)
         .into_iter()
         .filter_map(|e| e.ok())
     {
