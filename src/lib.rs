@@ -1,19 +1,22 @@
 use clap::Parser;
+use jwalk::WalkDir as JWalkDir;
+use parking_lot::Mutex;
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use walkdir::WalkDir;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-/// Calculate directory sizes for all items in a directory
+/// Calculate directory sizes for all items in a directory (parallel version)
 #[pyfunction]
 fn calculate_directory_sizes(
     py: Python,
     path: &str,
     use_inodes: bool,
 ) -> PyResult<HashMap<String, u64>> {
-    let mut sizes: HashMap<String, u64> = HashMap::new();
     let base_path = Path::new(path);
 
     if !base_path.exists() {
@@ -35,41 +38,92 @@ fn calculate_directory_sizes(
     let entries_vec: Vec<_> = entries.flatten().collect();
     let total_entries = entries_vec.len();
 
-    for (idx, entry) in entries_vec.into_iter().enumerate() {
-        // Check for Python signals (like Ctrl+C)
-        if let Err(e) = py.check_signals() {
-            // Clear progress bar before returning error
-            print!("\r{}\r", " ".repeat(50));
-            io::stdout().flush().ok();
-            return Err(e);
-        }
+    // Shared state for progress
+    let progress = Arc::new(AtomicUsize::new(0));
+    let results: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        let file_path = entry.path();
+    // Process entries in parallel, releasing the GIL
+    py.detach(|| {
+        entries_vec.par_iter().for_each(|entry| {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let file_path = entry.path();
 
-        // Show progress bar
-        print_progress(idx, total_entries);
-
-        let size = if use_inodes {
-            // Count inodes (files + directories)
-            if file_path.is_dir() {
-                count_inodes_with_cancel(py, &file_path)?
+            let size = if use_inodes {
+                count_inodes_parallel(&file_path)
             } else {
-                1
-            }
-        } else {
-            // Calculate size in kilobytes
-            calculate_size_kb_with_cancel(py, &file_path)?
-        };
+                calculate_size_kb_parallel(&file_path)
+            };
 
-        sizes.insert(file_name, size);
+            results.lock().insert(file_name, size);
+
+            // Update progress
+            let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+            // Only update progress bar every 10 items or at completion
+            if current % 10 == 0 || current == total_entries {
+                print_progress(current, total_entries);
+            }
+        });
+    });
+
+    // Check for Python signals after computation
+    if let Err(e) = py.check_signals() {
+        print!("\r{}\r", " ".repeat(50));
+        io::stdout().flush().ok();
+        return Err(e);
     }
 
     // Clear progress bar
     print!("\r{}\r", " ".repeat(50));
     io::stdout().flush().ok();
 
-    Ok(sizes)
+    let final_results = match Arc::try_unwrap(results) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(arc) => arc.lock().clone(),
+    };
+
+    Ok(final_results)
+}
+
+/// Calculate total size in kilobytes using parallel jwalk
+fn calculate_size_kb_parallel(path: &Path) -> u64 {
+    if path.is_file() {
+        return fs::metadata(path)
+            .map(|m| (m.len() + 1023) / 1024)
+            .unwrap_or(0);
+    }
+
+    if !path.is_dir() {
+        return 0;
+    }
+
+    // Use jwalk for parallel directory traversal
+    JWalkDir::new(path)
+        .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.metadata().map(|m| (m.len() + 1023) / 1024).unwrap_or(0))
+        .sum()
+}
+
+/// Count inodes using parallel jwalk
+fn count_inodes_parallel(path: &Path) -> u64 {
+    if !path.is_dir() {
+        return 1;
+    }
+
+    JWalkDir::new(path)
+        .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .count() as u64
+}
+
+/// Get the number of CPUs for parallelism
+fn num_cpus() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
 }
 
 /// Print a progress bar
@@ -91,52 +145,6 @@ fn print_progress(current: usize, total: usize) {
         total
     );
     io::stdout().flush().ok();
-}
-
-/// Calculate total size in kilobytes for a file or directory with cancellation support
-fn calculate_size_kb_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
-    if path.is_file() {
-        Ok(fs::metadata(path)
-            .map(|m| (m.len() + 1023) / 1024) // Round up to KB
-            .unwrap_or(0))
-    } else if path.is_dir() {
-        let mut total: u64 = 0;
-        let mut count = 0;
-        for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-            // Check for interrupts every 100 files
-            count += 1;
-            if count % 100 == 0 {
-                py.check_signals()?;
-            }
-
-            if entry.path().is_file() {
-                if let Ok(metadata) = fs::metadata(entry.path()) {
-                    total += (metadata.len() + 1023) / 1024;
-                }
-            }
-        }
-        Ok(total)
-    } else {
-        Ok(0)
-    }
-}
-
-/// Count inodes with cancellation support
-fn count_inodes_with_cancel(py: Python, path: &Path) -> PyResult<u64> {
-    let mut count = 0u64;
-    let mut iter_count = 0;
-
-    for _ in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-        count += 1;
-        iter_count += 1;
-
-        // Check for interrupts every 100 items
-        if iter_count % 100 == 0 {
-            py.check_signals()?;
-        }
-    }
-
-    Ok(count)
 }
 
 /// Get file type indicator (@ for symlinks, / for directories, empty for files)
