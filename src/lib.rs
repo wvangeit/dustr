@@ -55,7 +55,7 @@ fn calculate_directory_sizes(
                 break;
             }
             // Try to check Python signals
-            Python::attach(|py| {
+            Python::with_gil(|py| {
                 if py.check_signals().is_err() {
                     cancelled_for_thread.store(true, Ordering::Relaxed);
                 }
