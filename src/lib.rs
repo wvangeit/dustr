@@ -55,7 +55,7 @@ fn calculate_directory_sizes(
                 break;
             }
             // Try to check Python signals
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 if py.check_signals().is_err() {
                     cancelled_for_thread.store(true, Ordering::Relaxed);
                 }
@@ -67,7 +67,7 @@ fn calculate_directory_sizes(
     });
 
     // Process entries in parallel, releasing the GIL
-    py.allow_threads(|| {
+    py.detach(|| {
         entries_vec.par_iter().for_each(|entry| {
             // Check for cancellation
             if cancelled.load(Ordering::Relaxed) {
@@ -87,14 +87,16 @@ fn calculate_directory_sizes(
                 results.lock().insert(file_name, size);
             }
 
-            // Update progress
+            // Update progress periodically (skip equality check to avoid race condition)
             let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
-            // Only update progress bar every 10 items or at completion
-            if current % 10 == 0 || current == total_entries {
+            if current % 10 == 0 {
                 print_progress(current, total_entries);
             }
         });
     });
+
+    // Ensure final progress state is shown after parallel iteration completes
+    print_progress(total_entries, total_entries);
 
     // Signal the checker thread to stop and wait for it
     cancelled.store(true, Ordering::Relaxed);
@@ -135,7 +137,7 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
     let mut total: u64 = 0;
     let mut count = 0;
     for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::RayonDefaultPool)
+        .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
         .into_iter()
         .filter_map(|e| e.ok())
     {
