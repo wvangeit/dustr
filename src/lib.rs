@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Calculate directory sizes for all items in a directory (parallel version)
@@ -38,23 +38,54 @@ fn calculate_directory_sizes(
     let entries_vec: Vec<_> = entries.flatten().collect();
     let total_entries = entries_vec.len();
 
-    // Shared state for progress
+    // Shared state for progress and cancellation
     let progress = Arc::new(AtomicUsize::new(0));
+    let cancelled = Arc::new(AtomicBool::new(false));
     let results: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    // Clone for the signal checking thread
+    let cancelled_for_thread = cancelled.clone();
+
+    // Spawn a thread to check for Ctrl+C while holding the GIL
+    let signal_checker = std::thread::spawn(move || {
+        // This thread will periodically reacquire the GIL to check signals
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if cancelled_for_thread.load(Ordering::Relaxed) {
+                break;
+            }
+            // Try to check Python signals
+            Python::attach(|py| {
+                if py.check_signals().is_err() {
+                    cancelled_for_thread.store(true, Ordering::Relaxed);
+                }
+            });
+            if cancelled_for_thread.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    });
 
     // Process entries in parallel, releasing the GIL
     py.detach(|| {
         entries_vec.par_iter().for_each(|entry| {
+            // Check for cancellation
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+
             let file_name = entry.file_name().to_string_lossy().to_string();
             let file_path = entry.path();
 
             let size = if use_inodes {
-                count_inodes_parallel(&file_path)
+                count_inodes_parallel(&file_path, &cancelled)
             } else {
-                calculate_size_kb_parallel(&file_path)
+                calculate_size_kb_parallel(&file_path, &cancelled)
             };
 
-            results.lock().insert(file_name, size);
+            if !cancelled.load(Ordering::Relaxed) {
+                results.lock().insert(file_name, size);
+            }
 
             // Update progress
             let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
@@ -64,6 +95,10 @@ fn calculate_directory_sizes(
             }
         });
     });
+
+    // Signal the checker thread to stop and wait for it
+    cancelled.store(true, Ordering::Relaxed);
+    let _ = signal_checker.join();
 
     // Check for Python signals after computation
     if let Err(e) = py.check_signals() {
@@ -85,7 +120,7 @@ fn calculate_directory_sizes(
 }
 
 /// Calculate total size in kilobytes using parallel jwalk
-fn calculate_size_kb_parallel(path: &Path) -> u64 {
+fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
     if path.is_file() {
         return fs::metadata(path)
             .map(|m| (m.len() + 1023) / 1024)
@@ -97,26 +132,49 @@ fn calculate_size_kb_parallel(path: &Path) -> u64 {
     }
 
     // Use jwalk for parallel directory traversal
-    JWalkDir::new(path)
+    let mut total: u64 = 0;
+    let mut count = 0;
+    for entry in JWalkDir::new(path)
         .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.metadata().map(|m| (m.len() + 1023) / 1024).unwrap_or(0))
-        .sum()
+    {
+        // Check cancellation periodically
+        count += 1;
+        if count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        if entry.file_type().is_file() {
+            total += entry
+                .metadata()
+                .map(|m| (m.len() + 1023) / 1024)
+                .unwrap_or(0);
+        }
+    }
+    total
 }
 
 /// Count inodes using parallel jwalk
-fn count_inodes_parallel(path: &Path) -> u64 {
+fn count_inodes_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
     if !path.is_dir() {
         return 1;
     }
 
-    JWalkDir::new(path)
+    let mut count: u64 = 0;
+    let mut iter_count = 0;
+    for _ in JWalkDir::new(path)
         .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
         .into_iter()
         .filter_map(|e| e.ok())
-        .count() as u64
+    {
+        count += 1;
+        iter_count += 1;
+        // Check cancellation periodically
+        if iter_count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+    }
+    count
 }
 
 /// Get the number of CPUs for parallelism
