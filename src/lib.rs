@@ -67,7 +67,7 @@ fn calculate_directory_sizes(
     });
 
     // Process entries in parallel, releasing the GIL
-    py.detach(|| {
+    py.allow_threads(|| {
         entries_vec.par_iter().for_each(|entry| {
             // Check for cancellation
             if cancelled.load(Ordering::Relaxed) {
