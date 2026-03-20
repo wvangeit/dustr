@@ -74,10 +74,10 @@ dustr --json .
   "directory": ".",
   "mode": "size",
   "entries": [
-    { "name": ".gitignore", "size_kb": 4, "percentage": 1.39 },
-    { "name": ".git/", "size_kb": 220, "percentage": 76.39 }
+    { "name": ".gitignore", "value": 4, "percentage": 1.41 },
+    { "name": ".git/", "value": 220, "percentage": 77.46 }
   ],
-  "total": 288
+  "total": 284
 }
 ```
 

@@ -222,7 +222,7 @@ fn get_file_type_indicator(path: &str) -> PyResult<String> {
 }
 
 /// Format a number with thousand separators
-/// Format size with units (K, M, G, T)
+/// Format size with units (KB, MB, GB, TB)
 fn format_size(size_kb: u64) -> String {
     if size_kb >= 1_000_000_000 {
         let tb = size_kb as f64 / 1_000_000_000.0;
@@ -350,11 +350,11 @@ fn print_disk_usage(
             let percentage = if total_size != 0 {
                 100.0 * (*size as f64) / (total_size as f64)
             } else {
-                100.0
+                0.0
             };
             let comma = if i + 1 < file_sizes.len() { "," } else { "" };
             println!(
-                "    {{\"name\": \"{}\", \"size_kb\": {}, \"percentage\": {:.2}}}{}",
+                "    {{\"name\": \"{}\", \"value\": {}, \"percentage\": {:.2}}}{}",
                 json_escape(name),
                 size,
                 percentage,
@@ -399,7 +399,7 @@ fn print_disk_usage(
         let percentage = if total_size != 0 {
             100.0 * (*file_size as f64) / (total_size as f64)
         } else {
-            100.0
+            0.0
         };
         let size_str = if inodes {
             if no_grouping {
