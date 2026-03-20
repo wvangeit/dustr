@@ -3,6 +3,7 @@ use jwalk::WalkDir as JWalkDir;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -104,14 +105,14 @@ fn calculate_directory_sizes(
 
     // Check for Python signals after computation
     if let Err(e) = py.check_signals() {
-        print!("\r{}\r", " ".repeat(50));
-        io::stdout().flush().ok();
+        eprint!("\r{}\r", " ".repeat(50));
+        io::stderr().flush().ok();
         return Err(e);
     }
 
     // Clear progress bar
-    print!("\r{}\r", " ".repeat(50));
-    io::stdout().flush().ok();
+    eprint!("\r{}\r", " ".repeat(50));
+    io::stderr().flush().ok();
 
     let final_results = match Arc::try_unwrap(results) {
         Ok(mutex) => mutex.into_inner(),
@@ -186,7 +187,7 @@ fn num_cpus() -> usize {
         .unwrap_or(4)
 }
 
-/// Print a progress bar
+/// Print a progress bar to stderr
 fn print_progress(current: usize, total: usize) {
     let bar_width = 40;
     let progress = if total > 0 {
@@ -197,14 +198,14 @@ fn print_progress(current: usize, total: usize) {
     let filled = (bar_width as f64 * progress) as usize;
     let empty = bar_width - filled;
 
-    print!(
+    eprint!(
         "\r[{}{}] {}/{}",
         ">".repeat(filled),
         "-".repeat(empty),
         current,
         total
     );
-    io::stdout().flush().ok();
+    io::stderr().flush().ok();
 }
 
 /// Get file type indicator (@ for symlinks, / for directories, empty for files)
@@ -225,21 +226,17 @@ fn get_file_type_indicator(path: &str) -> PyResult<String> {
 /// Format size with units (K, M, G, T)
 fn format_size(size_kb: u64) -> String {
     if size_kb >= 1_000_000_000 {
-        // Terabytes
         let tb = size_kb as f64 / 1_000_000_000.0;
-        format!("{:.1} Tb", tb)
+        format!("{:.1} TB", tb)
     } else if size_kb >= 1_000_000 {
-        // Gigabytes
         let gb = size_kb as f64 / 1_000_000.0;
-        format!("{:.1} Gb", gb)
+        format!("{:.1} GB", gb)
     } else if size_kb >= 1_000 {
-        // Megabytes
         let mb = size_kb as f64 / 1_000.0;
-        format!("{:.1} Mb", mb)
+        format!("{:.1} MB", mb)
     } else {
         let kb = size_kb as f64;
-        // Kilobytes
-        format!("{:.1} Kb", kb)
+        format!("{:.1} KB", kb)
     }
 }
 
@@ -259,15 +256,33 @@ fn format_with_grouping(num: u64) -> String {
     result
 }
 
+/// Entry in the JSON output
+#[derive(Serialize)]
+struct DiskUsageEntry {
+    name: String,
+    size_kb: u64,
+    percentage: f64,
+}
+
+/// JSON output structure
+#[derive(Serialize)]
+struct DiskUsageReport {
+    directory: String,
+    mode: String,
+    entries: Vec<DiskUsageEntry>,
+    total: u64,
+}
+
 /// Print the complete disk usage analysis
 #[pyfunction]
-#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false))]
+#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false))]
 fn print_disk_usage(
     py: Python,
     dirname: &str,
     inodes: bool,
     no_grouping: bool,
     no_f: bool,
+    json: bool,
 ) -> PyResult<()> {
     let max_marks = 20;
 
@@ -333,6 +348,43 @@ fn print_disk_usage(
     file_sizes.sort_by_key(|k| k.1);
 
     let total_size: u64 = file_sizes.iter().map(|(_, s)| s).sum();
+
+    if json {
+        let entries: Vec<DiskUsageEntry> = file_sizes
+            .iter()
+            .map(|(name, size)| {
+                let percentage = if total_size != 0 {
+                    100.0 * (*size as f64) / (total_size as f64)
+                } else {
+                    100.0
+                };
+                DiskUsageEntry {
+                    name: name.clone(),
+                    size_kb: *size,
+                    percentage,
+                }
+            })
+            .collect();
+
+        let report = DiskUsageReport {
+            directory: dirname.to_string(),
+            mode: if inodes {
+                "inodes".to_string()
+            } else {
+                "size".to_string()
+            },
+            entries,
+            total: total_size,
+        };
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_default()
+        );
+
+        return Ok(());
+    }
+
     let max_size = file_sizes
         .iter()
         .map(|(_, s)| s)
@@ -371,14 +423,12 @@ fn print_disk_usage(
             100.0
         };
         let size_str = if inodes {
-            // For inodes, use the old format with grouping
             if no_grouping {
                 file_size.to_string()
             } else {
                 format_with_grouping(*file_size)
             }
         } else {
-            // For sizes, use K/M/G format
             format_size(*file_size)
         };
 
@@ -429,6 +479,10 @@ struct Cli {
     /// Don't append file type indicators
     #[arg(short = 'f', long = "noF")]
     no_f: bool,
+
+    /// Output results as JSON
+    #[arg(short, long)]
+    json: bool,
 }
 
 /// Main entry point for the dustr command
@@ -446,7 +500,7 @@ fn main(py: Python, args: Vec<String>) -> PyResult<()> {
     };
 
     // Allow Ctrl+C by releasing GIL
-    print_disk_usage(py, &cli.dirname, cli.inodes, cli.nogrouping, cli.no_f)
+    print_disk_usage(py, &cli.dirname, cli.inodes, cli.nogrouping, cli.no_f, cli.json)
 }
 
 /// Python module definition

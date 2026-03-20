@@ -6,28 +6,25 @@ Dustr is a Rust-based implementation of [duk](https://github.com/wvangeit/duk), 
 
 Dustr provides the same functionality as duk but with a Rust backend for improved performance. It will show you a histogram of the disk usage in a directory:
 
-```bash
->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
+```
 Statistics of directory "." :
 
-in kByte       in %   histogram            name
-4              1.39   #                    .gitignore
-4              1.39   #                    setup.py
-4              1.39   #                    .travis.yml
-4              1.39   #                    README.md
-12             4.17   ##                   dist/
-12             4.17   ##                   dustr/
-12             4.17   ##                   build/
-16             5.56   ##                   duk.egg-info/
-220            76.39  #################### .git/
+Size           In %   Histogram            Name
+4.0 KB         1.39  #                    .gitignore
+4.0 KB         1.39  #                    setup.py
+4.0 KB         1.39  #                    README.md
+12.0 KB        4.17  ##                   dist/
+12.0 KB        4.17  ##                   dustr/
+12.0 KB        4.17  ##                   build/
+16.0 KB        5.56  ##                   duk.egg-info/
+220.0 KB       76.39 ####################  .git/
 
-Total directory size: 288 kByte
+Total directory size: 284.0 KB
 ```
 
 ## Installation
 
-### From PyPI (once published)
+### From PyPI
 
 ```bash
 pip install dustr
@@ -56,19 +53,37 @@ pip install target/wheels/dustr-*.whl
 ## Usage
 
 ```bash
-dustr [directory]
+dustr [OPTIONS] [DIRECTORY]
 ```
 
 Options:
 
-- `--nogrouping`: Don't group thousands with commas
-- `--noprogress`: Don't show progress bar (note: Rust version calculates all at once, so this has less effect)
-- `--inodes`: Show inode count instead of size
-- `--noF`: Don't add file type indicators (/ for directories, @ for symlinks)
+- `-i, --inodes`: Show inode count instead of size
+- `-g, --nogrouping`: Don't use thousand separators (for inode mode)
+- `-f, --noF`: Don't add file type indicators (`/` for directories, `@` for symlinks)
+- `-j, --json`: Output results as JSON
+
+### JSON output
+
+```bash
+dustr --json .
+```
+
+```json
+{
+  "directory": ".",
+  "mode": "size",
+  "entries": [
+    { "name": ".gitignore", "size_kb": 4, "percentage": 1.39 },
+    { "name": ".git/", "size_kb": 220, "percentage": 76.39 }
+  ],
+  "total": 288
+}
+```
 
 ## Differences from duk
 
-- **Performance**: Rust backend provides faster directory traversal
+- **Performance**: Rust backend with parallel directory traversal (jwalk + rayon)
 - **Implementation**: Uses native Rust file system operations instead of calling `du` command
 - **Progress**: Since the Rust implementation calculates all sizes in parallel, progress indication is less granular
 
