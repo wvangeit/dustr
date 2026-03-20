@@ -385,12 +385,7 @@ fn print_disk_usage(
 
     // Print errors
     for (error, filename) in &errors {
-        println!(
-            "{:<width$} {:<10}",
-            error,
-            filename,
-            width = 22 + max_marks
-        );
+        println!("{:<width$} {:<10}", error, filename, width = 22 + max_marks);
     }
 
     // Print files
