@@ -18,10 +18,10 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -49,7 +49,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -62,10 +62,36 @@ jobs:
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
+  test-wheels:
+    name: Test wheel build on ${{ matrix.os }} (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    if: github.event_name == 'pull_request'
+    needs: [test, lint]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
+          - os: macos-latest
+            target: x86_64
+          - os: macos-latest
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13 python3.14
+          manylinux: auto
+
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    if: (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')) || github.event_name == 'release'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     needs: [test, lint]
     permissions:
       contents: write
@@ -74,7 +100,7 @@ jobs:
       tag: ${{ steps.bump.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -119,23 +145,25 @@ jobs:
           sed -i.bak "s/^version = .*/version = \"${{ steps.bump.outputs.version }}\"/" Cargo.toml
           rm Cargo.toml.bak
 
-      - name: Commit version bump
+      - name: Commit version bump and tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml
           git diff --staged --quiet || git commit -m "Bump version to ${{ steps.bump.outputs.version }}"
+          git tag ${{ steps.bump.outputs.tag }}
           git push
+          git push origin ${{ steps.bump.outputs.tag }}
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.bump.outputs.tag }}
           name: Release ${{ steps.bump.outputs.tag }}
           generate_release_notes: true
 
   build-wheels:
-    name: Build wheels on ${{ matrix.os }}
+    name: Build wheels on ${{ matrix.os }} (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     needs: [release]
     strategy:
@@ -151,13 +179,9 @@ jobs:
             target: aarch64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ github.ref }}
-          fetch-depth: 0
-
-      - name: Pull latest changes
-        run: git pull origin ${{ github.ref_name }}
+          ref: ${{ needs.release.outputs.tag }}
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
