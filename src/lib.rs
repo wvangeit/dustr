@@ -3,7 +3,6 @@ use jwalk::WalkDir as JWalkDir;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use rayon::prelude::*;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -256,21 +255,13 @@ fn format_with_grouping(num: u64) -> String {
     result
 }
 
-/// Entry in the JSON output
-#[derive(Serialize)]
-struct DiskUsageEntry {
-    name: String,
-    size_kb: u64,
-    percentage: f64,
-}
-
-/// JSON output structure
-#[derive(Serialize)]
-struct DiskUsageReport {
-    directory: String,
-    mode: String,
-    entries: Vec<DiskUsageEntry>,
-    total: u64,
+/// Escape a string for JSON output
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 /// Print the complete disk usage analysis
@@ -350,37 +341,29 @@ fn print_disk_usage(
     let total_size: u64 = file_sizes.iter().map(|(_, s)| s).sum();
 
     if json {
-        let entries: Vec<DiskUsageEntry> = file_sizes
-            .iter()
-            .map(|(name, size)| {
-                let percentage = if total_size != 0 {
-                    100.0 * (*size as f64) / (total_size as f64)
-                } else {
-                    100.0
-                };
-                DiskUsageEntry {
-                    name: name.clone(),
-                    size_kb: *size,
-                    percentage,
-                }
-            })
-            .collect();
-
-        let report = DiskUsageReport {
-            directory: dirname.to_string(),
-            mode: if inodes {
-                "inodes".to_string()
+        let mode = if inodes { "inodes" } else { "size" };
+        println!("{{");
+        println!("  \"directory\": \"{}\",", json_escape(dirname));
+        println!("  \"mode\": \"{}\",", mode);
+        println!("  \"entries\": [");
+        for (i, (name, size)) in file_sizes.iter().enumerate() {
+            let percentage = if total_size != 0 {
+                100.0 * (*size as f64) / (total_size as f64)
             } else {
-                "size".to_string()
-            },
-            entries,
-            total: total_size,
-        };
-
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_default()
-        );
+                100.0
+            };
+            let comma = if i + 1 < file_sizes.len() { "," } else { "" };
+            println!(
+                "    {{\"name\": \"{}\", \"size_kb\": {}, \"percentage\": {:.2}}}{}",
+                json_escape(name),
+                size,
+                percentage,
+                comma
+            );
+        }
+        println!("  ],");
+        println!("  \"total\": {}", total_size);
+        println!("}}");
 
         return Ok(());
     }
@@ -500,7 +483,14 @@ fn main(py: Python, args: Vec<String>) -> PyResult<()> {
     };
 
     // Allow Ctrl+C by releasing GIL
-    print_disk_usage(py, &cli.dirname, cli.inodes, cli.nogrouping, cli.no_f, cli.json)
+    print_disk_usage(
+        py,
+        &cli.dirname,
+        cli.inodes,
+        cli.nogrouping,
+        cli.no_f,
+        cli.json,
+    )
 }
 
 /// Python module definition
