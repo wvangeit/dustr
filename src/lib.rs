@@ -89,7 +89,7 @@ fn calculate_directory_sizes(
 
             // Update progress periodically (skip equality check to avoid race condition)
             let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
-            if current % 10 == 0 {
+            if current.is_multiple_of(10) {
                 print_progress(current, total_entries);
             }
         });
@@ -125,7 +125,7 @@ fn calculate_directory_sizes(
 fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
     if path.is_file() {
         return fs::metadata(path)
-            .map(|m| (m.len() + 1023) / 1024)
+            .map(|m| m.len().div_ceil(1024))
             .unwrap_or(0);
     }
 
@@ -149,7 +149,7 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
         if entry.file_type().is_file() {
             total += entry
                 .metadata()
-                .map(|m| (m.len() + 1023) / 1024)
+                .map(|m| m.len().div_ceil(1024))
                 .unwrap_or(0);
         }
     }
@@ -246,7 +246,7 @@ fn format_with_grouping(num: u64) -> String {
     let len = s.len();
 
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push('\'');
         }
         result.push(c);
@@ -386,9 +386,10 @@ fn print_disk_usage(
     // Print errors
     for (error, filename) in &errors {
         println!(
-            "{} {:<10}",
-            format!("{:<width$}", error, width = 22 + max_marks),
-            filename
+            "{:<width$} {:<10}",
+            error,
+            filename,
+            width = 22 + max_marks
         );
     }
 
