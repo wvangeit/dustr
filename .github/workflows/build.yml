@@ -62,32 +62,6 @@ jobs:
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
-  test-wheels:
-    name: Test wheel build on ${{ matrix.os }} (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    if: github.event_name == 'pull_request'
-    needs: [test, lint]
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64
-          - os: ubuntu-latest
-            target: aarch64
-          - os: macos-latest
-            target: x86_64
-          - os: macos-latest
-            target: aarch64
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13 python3.14
-          manylinux: auto
-
   release:
     name: Create Release
     runs-on: ubuntu-latest
@@ -179,11 +153,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.ref }}
-          fetch-depth: 0
-
-      - name: Pull latest changes
-        run: git pull origin ${{ github.ref_name }}
+          ref: ${{ needs.release.outputs.tag }}
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
