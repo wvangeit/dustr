@@ -89,7 +89,7 @@ fn calculate_directory_sizes(
 
             // Update progress periodically (skip equality check to avoid race condition)
             let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
-            if current % 10 == 0 {
+            if current.is_multiple_of(10) {
                 print_progress(current, total_entries);
             }
         });
@@ -104,14 +104,14 @@ fn calculate_directory_sizes(
 
     // Check for Python signals after computation
     if let Err(e) = py.check_signals() {
-        print!("\r{}\r", " ".repeat(50));
-        io::stdout().flush().ok();
+        eprint!("\r{}\r", " ".repeat(50));
+        io::stderr().flush().ok();
         return Err(e);
     }
 
     // Clear progress bar
-    print!("\r{}\r", " ".repeat(50));
-    io::stdout().flush().ok();
+    eprint!("\r{}\r", " ".repeat(50));
+    io::stderr().flush().ok();
 
     let final_results = match Arc::try_unwrap(results) {
         Ok(mutex) => mutex.into_inner(),
@@ -125,7 +125,7 @@ fn calculate_directory_sizes(
 fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
     if path.is_file() {
         return fs::metadata(path)
-            .map(|m| (m.len() + 1023) / 1024)
+            .map(|m| m.len().div_ceil(1024))
             .unwrap_or(0);
     }
 
@@ -149,7 +149,7 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
         if entry.file_type().is_file() {
             total += entry
                 .metadata()
-                .map(|m| (m.len() + 1023) / 1024)
+                .map(|m| m.len().div_ceil(1024))
                 .unwrap_or(0);
         }
     }
@@ -186,7 +186,7 @@ fn num_cpus() -> usize {
         .unwrap_or(4)
 }
 
-/// Print a progress bar
+/// Print a progress bar to stderr
 fn print_progress(current: usize, total: usize) {
     let bar_width = 40;
     let progress = if total > 0 {
@@ -197,14 +197,14 @@ fn print_progress(current: usize, total: usize) {
     let filled = (bar_width as f64 * progress) as usize;
     let empty = bar_width - filled;
 
-    print!(
+    eprint!(
         "\r[{}{}] {}/{}",
         ">".repeat(filled),
         "-".repeat(empty),
         current,
         total
     );
-    io::stdout().flush().ok();
+    io::stderr().flush().ok();
 }
 
 /// Get file type indicator (@ for symlinks, / for directories, empty for files)
@@ -222,24 +222,20 @@ fn get_file_type_indicator(path: &str) -> PyResult<String> {
 }
 
 /// Format a number with thousand separators
-/// Format size with units (K, M, G, T)
+/// Format size with units (KB, MB, GB, TB)
 fn format_size(size_kb: u64) -> String {
     if size_kb >= 1_000_000_000 {
-        // Terabytes
         let tb = size_kb as f64 / 1_000_000_000.0;
-        format!("{:.1} Tb", tb)
+        format!("{:.1} TB", tb)
     } else if size_kb >= 1_000_000 {
-        // Gigabytes
         let gb = size_kb as f64 / 1_000_000.0;
-        format!("{:.1} Gb", gb)
+        format!("{:.1} GB", gb)
     } else if size_kb >= 1_000 {
-        // Megabytes
         let mb = size_kb as f64 / 1_000.0;
-        format!("{:.1} Mb", mb)
+        format!("{:.1} MB", mb)
     } else {
         let kb = size_kb as f64;
-        // Kilobytes
-        format!("{:.1} Kb", kb)
+        format!("{:.1} KB", kb)
     }
 }
 
@@ -250,7 +246,7 @@ fn format_with_grouping(num: u64) -> String {
     let len = s.len();
 
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push('\'');
         }
         result.push(c);
@@ -259,15 +255,25 @@ fn format_with_grouping(num: u64) -> String {
     result
 }
 
+/// Escape a string for JSON output
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 /// Print the complete disk usage analysis
 #[pyfunction]
-#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false))]
+#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false))]
 fn print_disk_usage(
     py: Python,
     dirname: &str,
     inodes: bool,
     no_grouping: bool,
     no_f: bool,
+    json: bool,
 ) -> PyResult<()> {
     let max_marks = 20;
 
@@ -333,6 +339,35 @@ fn print_disk_usage(
     file_sizes.sort_by_key(|k| k.1);
 
     let total_size: u64 = file_sizes.iter().map(|(_, s)| s).sum();
+
+    if json {
+        let mode = if inodes { "inodes" } else { "size" };
+        println!("{{");
+        println!("  \"directory\": \"{}\",", json_escape(dirname));
+        println!("  \"mode\": \"{}\",", mode);
+        println!("  \"entries\": [");
+        for (i, (name, size)) in file_sizes.iter().enumerate() {
+            let percentage = if total_size != 0 {
+                100.0 * (*size as f64) / (total_size as f64)
+            } else {
+                0.0
+            };
+            let comma = if i + 1 < file_sizes.len() { "," } else { "" };
+            println!(
+                "    {{\"name\": \"{}\", \"value\": {}, \"percentage\": {:.2}}}{}",
+                json_escape(name),
+                size,
+                percentage,
+                comma
+            );
+        }
+        println!("  ],");
+        println!("  \"total\": {}", total_size);
+        println!("}}");
+
+        return Ok(());
+    }
+
     let max_size = file_sizes
         .iter()
         .map(|(_, s)| s)
@@ -350,11 +385,7 @@ fn print_disk_usage(
 
     // Print errors
     for (error, filename) in &errors {
-        println!(
-            "{} {:<10}",
-            format!("{:<width$}", error, width = 22 + max_marks),
-            filename
-        );
+        println!("{:<width$} {:<10}", error, filename, width = 22 + max_marks);
     }
 
     // Print files
@@ -368,17 +399,15 @@ fn print_disk_usage(
         let percentage = if total_size != 0 {
             100.0 * (*file_size as f64) / (total_size as f64)
         } else {
-            100.0
+            0.0
         };
         let size_str = if inodes {
-            // For inodes, use the old format with grouping
             if no_grouping {
                 file_size.to_string()
             } else {
                 format_with_grouping(*file_size)
             }
         } else {
-            // For sizes, use K/M/G format
             format_size(*file_size)
         };
 
@@ -429,6 +458,10 @@ struct Cli {
     /// Don't append file type indicators
     #[arg(short = 'f', long = "noF")]
     no_f: bool,
+
+    /// Output results as JSON
+    #[arg(short, long)]
+    json: bool,
 }
 
 /// Main entry point for the dustr command
@@ -446,7 +479,14 @@ fn main(py: Python, args: Vec<String>) -> PyResult<()> {
     };
 
     // Allow Ctrl+C by releasing GIL
-    print_disk_usage(py, &cli.dirname, cli.inodes, cli.nogrouping, cli.no_f)
+    print_disk_usage(
+        py,
+        &cli.dirname,
+        cli.inodes,
+        cli.nogrouping,
+        cli.no_f,
+        cli.json,
+    )
 }
 
 /// Python module definition
