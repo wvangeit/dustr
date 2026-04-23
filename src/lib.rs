@@ -755,3 +755,34 @@ fn _dustr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(main, m)?)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_bar_zero_total() {
+        // Avoid divide-by-zero; should render an empty bar.
+        let bar = format_progress_bar(0, 0);
+        assert_eq!(bar, format!("[{}] 0/0", "-".repeat(40)));
+    }
+
+    #[test]
+    fn progress_bar_half() {
+        let bar = format_progress_bar(5, 10);
+        assert_eq!(bar, format!("[{}{}] 5/10", ">".repeat(20), "-".repeat(20)));
+    }
+
+    #[test]
+    fn progress_bar_full() {
+        let bar = format_progress_bar(10, 10);
+        assert_eq!(bar, format!("[{}] 10/10", ">".repeat(40)));
+    }
+
+    #[test]
+    fn progress_bar_no_newline() {
+        // The live view appends its own newline; the bar itself must not.
+        let bar = format_progress_bar(3, 7);
+        assert!(!bar.contains('\n'));
+    }
+}
