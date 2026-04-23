@@ -43,6 +43,21 @@ fn calculate_directory_sizes(
     let entries_vec: Vec<_> = entries.flatten().collect();
     let total_entries = entries_vec.len();
 
+    // Compute the base directory device id once for mount boundary checks
+    let base_dev = if !cross_mounts {
+        match fs::metadata(base_path) {
+            Ok(m) => Some(m.dev()),
+            Err(e) => {
+                return Err(PyErr::new::<pyo3::exceptions::PyOSError, _>(format!(
+                    "Cannot read metadata for '{}': {}",
+                    path, e
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
     // Shared state for progress and cancellation
     let progress = Arc::new(AtomicUsize::new(0));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -127,9 +142,9 @@ fn calculate_directory_sizes(
             }
 
             let size = if use_inodes {
-                count_inodes_parallel(&file_path, &cancelled, cross_mounts, &current_entry)
+                count_inodes_parallel(&file_path, &cancelled, base_dev, &current_entry)
             } else {
-                calculate_size_kb_parallel(&file_path, &cancelled, cross_mounts, &current_entry)
+                calculate_size_kb_parallel(&file_path, &cancelled, base_dev, &current_entry)
             };
 
             if !cancelled.load(Ordering::Relaxed) {
@@ -204,7 +219,7 @@ fn calculate_directory_sizes(
 fn calculate_size_kb_parallel(
     path: &Path,
     cancelled: &AtomicBool,
-    cross_mounts: bool,
+    base_dev: Option<u64>,
     current_entry: &Mutex<String>,
 ) -> u64 {
     if path.is_file() {
@@ -216,12 +231,6 @@ fn calculate_size_kb_parallel(
     if !path.is_dir() {
         return 0;
     }
-
-    let root_dev = if !cross_mounts {
-        fs::metadata(path).map(|m| Some(m.dev())).unwrap_or(None)
-    } else {
-        None
-    };
 
     // Use jwalk for parallel directory traversal
     let mut total: u64 = 0;
@@ -237,11 +246,14 @@ fn calculate_size_kb_parallel(
             break;
         }
         // Skip entries on different filesystems
-        if let Some(dev) = root_dev {
-            if let Ok(m) = entry.metadata() {
-                if m.dev() != dev {
-                    continue;
+        if let Some(dev) = base_dev {
+            match entry.metadata() {
+                Ok(m) => {
+                    if m.dev() != dev {
+                        continue;
+                    }
                 }
+                Err(_) => continue,
             }
         }
         if entry.file_type().is_dir() {
@@ -262,18 +274,12 @@ fn calculate_size_kb_parallel(
 fn count_inodes_parallel(
     path: &Path,
     cancelled: &AtomicBool,
-    cross_mounts: bool,
+    base_dev: Option<u64>,
     current_entry: &Mutex<String>,
 ) -> u64 {
     if !path.is_dir() {
         return 1;
     }
-
-    let root_dev = if !cross_mounts {
-        fs::metadata(path).map(|m| Some(m.dev())).unwrap_or(None)
-    } else {
-        None
-    };
 
     let mut count: u64 = 0;
     let mut iter_count = 0;
@@ -288,11 +294,14 @@ fn count_inodes_parallel(
             break;
         }
         // Skip entries on different filesystems
-        if let Some(dev) = root_dev {
-            if let Ok(m) = entry.metadata() {
-                if m.dev() != dev {
-                    continue;
+        if let Some(dev) = base_dev {
+            match entry.metadata() {
+                Ok(m) => {
+                    if m.dev() != dev {
+                        continue;
+                    }
                 }
+                Err(_) => continue,
             }
         }
         if entry.file_type().is_dir() && iter_count % 100 == 0 {
@@ -475,6 +484,7 @@ fn json_escape(s: &str) -> String {
 /// Print the complete disk usage analysis
 #[pyfunction]
 #[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false, cross_mounts=false, verbose=false, live=false))]
+#[allow(clippy::too_many_arguments)]
 fn print_disk_usage(
     py: Python,
     dirname: &str,
