@@ -90,7 +90,6 @@ dustr --json .
 
 - **Performance**: Rust backend with parallel directory traversal (jwalk + rayon)
 - **Implementation**: Uses native Rust file system operations instead of calling `du` command
-- **Progress**: Since the Rust implementation calculates all sizes in parallel, progress indication is less granular
 
 ## Requirements
 
