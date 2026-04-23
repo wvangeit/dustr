@@ -383,16 +383,18 @@ fn render_stats_table(
     out
 }
 
+/// Width of the rendered progress bar (number of characters between the brackets).
+const BAR_WIDTH: usize = 40;
+
 /// Format a progress bar as a string (no trailing newline)
 fn format_progress_bar(current: usize, total: usize) -> String {
-    let bar_width = 40;
     let progress = if total > 0 {
         current as f64 / total as f64
     } else {
         0.0
     };
-    let filled = (bar_width as f64 * progress) as usize;
-    let empty = bar_width - filled;
+    let filled = (BAR_WIDTH as f64 * progress) as usize;
+    let empty = BAR_WIDTH - filled;
     format!(
         "[{}{}] {}/{}",
         ">".repeat(filled),
@@ -404,14 +406,7 @@ fn format_progress_bar(current: usize, total: usize) -> String {
 
 /// Print a progress bar to stderr
 fn print_progress(current: usize, total: usize, current_entry: Option<&str>) {
-    let bar_width = 40;
-    let progress = if total > 0 {
-        current as f64 / total as f64
-    } else {
-        0.0
-    };
-    let filled = (bar_width as f64 * progress) as usize;
-    let empty = bar_width - filled;
+    let bar = format_progress_bar(current, total);
 
     match current_entry {
         Some(name) => {
@@ -423,23 +418,14 @@ fn print_progress(current: usize, total: usize, current_entry: Option<&str>) {
                 name.to_string()
             };
             eprint!(
-                "\r{blank}\r[{bar}{empty}] {cur}/{tot} {name}",
+                "\r{blank}\r{bar} {name}",
                 blank = " ".repeat(80),
-                bar = ">".repeat(filled),
-                empty = "-".repeat(empty),
-                cur = current,
-                tot = total,
+                bar = bar,
                 name = display_name,
             );
         }
         None => {
-            eprint!(
-                "\r[{}{}] {}/{}",
-                ">".repeat(filled),
-                "-".repeat(empty),
-                current,
-                total
-            );
+            eprint!("\r{}", bar);
         }
     }
     io::stderr().flush().ok();
@@ -764,19 +750,27 @@ mod tests {
     fn progress_bar_zero_total() {
         // Avoid divide-by-zero; should render an empty bar.
         let bar = format_progress_bar(0, 0);
-        assert_eq!(bar, format!("[{}] 0/0", "-".repeat(40)));
+        assert_eq!(bar, format!("[{}] 0/0", "-".repeat(BAR_WIDTH)));
     }
 
     #[test]
     fn progress_bar_half() {
         let bar = format_progress_bar(5, 10);
-        assert_eq!(bar, format!("[{}{}] 5/10", ">".repeat(20), "-".repeat(20)));
+        let filled = BAR_WIDTH / 2;
+        assert_eq!(
+            bar,
+            format!(
+                "[{}{}] 5/10",
+                ">".repeat(filled),
+                "-".repeat(BAR_WIDTH - filled)
+            )
+        );
     }
 
     #[test]
     fn progress_bar_full() {
         let bar = format_progress_bar(10, 10);
-        assert_eq!(bar, format!("[{}] 10/10", ">".repeat(40)));
+        assert_eq!(bar, format!("[{}] 10/10", ">".repeat(BAR_WIDTH)));
     }
 
     #[test]
