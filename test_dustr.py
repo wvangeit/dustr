@@ -103,10 +103,95 @@ def test_permission_denied():
                 os.chmod(protected, 0o755)
 
 
+def test_cross_mounts():
+    """Test that cross_mounts parameter is accepted and results match on same fs"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "file1.txt").write_text("Hello" * 100)
+        subdir = Path(tmpdir) / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").write_text("World" * 200)
+
+        # Both should give the same results on a single filesystem
+        sizes_default = calculate_directory_sizes(tmpdir, use_inodes=False)
+        sizes_no_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=False, cross_mounts=False
+        )
+        sizes_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=False, cross_mounts=True
+        )
+
+        assert sizes_default == sizes_no_cross
+        assert sizes_default == sizes_cross
+
+        # Same for inodes
+        inodes_default = calculate_directory_sizes(tmpdir, use_inodes=True)
+        inodes_no_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=True, cross_mounts=False
+        )
+        inodes_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=True, cross_mounts=True
+        )
+
+        assert inodes_default == inodes_no_cross
+        assert inodes_default == inodes_cross
+
+
+def test_verbose():
+    """Test that verbose parameter is accepted and results are unchanged"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "file1.txt").write_text("Hello" * 100)
+        subdir = Path(tmpdir) / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").write_text("World" * 200)
+
+        sizes_normal = calculate_directory_sizes(tmpdir, use_inodes=False)
+        sizes_verbose = calculate_directory_sizes(
+            tmpdir, use_inodes=False, verbose=True
+        )
+
+        assert sizes_normal == sizes_verbose
+
+
+def test_disk_usage_vs_apparent_size():
+    """Test that sizes reflect actual disk usage (st_blocks), not apparent size"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        testfile = Path(tmpdir) / "testfile.bin"
+        testfile.write_bytes(b"x" * 4096)
+
+        sizes = calculate_directory_sizes(tmpdir, use_inodes=False)
+
+        # Compare with what os.stat reports for actual blocks
+        stat = os.stat(testfile)
+        expected_kb = (stat.st_blocks * 512 + 1023) // 1024  # div_ceil
+
+        assert sizes["testfile.bin"] == expected_kb, (
+            f"Reported {sizes['testfile.bin']} KB, "
+            f"expected {expected_kb} KB from st_blocks"
+        )
+
+
+def test_live():
+    """Test that live parameter is accepted and results are unchanged"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "file1.txt").write_text("Hello" * 100)
+        subdir = Path(tmpdir) / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").write_text("World" * 200)
+
+        sizes_normal = calculate_directory_sizes(tmpdir, use_inodes=False)
+        sizes_live = calculate_directory_sizes(tmpdir, use_inodes=False, live=True)
+
+        assert sizes_normal == sizes_live
+
+
 if __name__ == "__main__":
     test_calculate_directory_sizes()
     test_calculate_directory_sizes_inodes()
     test_get_file_type_indicator()
     test_nonexistent_directory()
     test_permission_denied()
+    test_cross_mounts()
+    test_verbose()
+    test_disk_usage_vs_apparent_size()
+    test_live()
     print("All tests passed!")

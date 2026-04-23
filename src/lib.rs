@@ -6,16 +6,21 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Calculate directory sizes for all items in a directory (parallel version)
 #[pyfunction]
+#[pyo3(signature = (path, use_inodes, cross_mounts=false, verbose=false, live=false))]
 fn calculate_directory_sizes(
     py: Python,
     path: &str,
     use_inodes: bool,
+    cross_mounts: bool,
+    verbose: bool,
+    live: bool,
 ) -> PyResult<HashMap<String, u64>> {
     let base_path = Path::new(path);
 
@@ -38,10 +43,26 @@ fn calculate_directory_sizes(
     let entries_vec: Vec<_> = entries.flatten().collect();
     let total_entries = entries_vec.len();
 
+    // Compute the base directory device id once for mount boundary checks
+    let base_dev = if !cross_mounts {
+        match fs::metadata(base_path) {
+            Ok(m) => Some(m.dev()),
+            Err(e) => {
+                return Err(PyErr::new::<pyo3::exceptions::PyOSError, _>(format!(
+                    "Cannot read metadata for '{}': {}",
+                    path, e
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
     // Shared state for progress and cancellation
     let progress = Arc::new(AtomicUsize::new(0));
     let cancelled = Arc::new(AtomicBool::new(false));
     let results: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    let current_entry: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
     // Clone for the signal checking thread
     let cancelled_for_thread = cancelled.clone();
@@ -66,6 +87,45 @@ fn calculate_directory_sizes(
         }
     });
 
+    // Spawn live display thread if requested
+    let live_display = if live {
+        let results_for_display = results.clone();
+        let cancelled_for_display = cancelled.clone();
+        let progress_for_display = progress.clone();
+        let dirname = path.to_string();
+        Some(std::thread::spawn(move || {
+            let mut last_lines = 0usize;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if cancelled_for_display.load(Ordering::Relaxed) {
+                    break;
+                }
+                let snapshot: Vec<(String, u64)> = {
+                    let r = results_for_display.lock();
+                    r.iter().map(|(k, v)| (k.clone(), *v)).collect()
+                };
+                let current = progress_for_display.load(Ordering::Relaxed);
+                let table = render_stats_table(
+                    &dirname,
+                    &snapshot,
+                    use_inodes,
+                    false,
+                    current,
+                    total_entries,
+                );
+                // Move cursor up to overwrite previous output, then print
+                if last_lines > 0 {
+                    eprint!("\x1b[{}A\x1b[J", last_lines);
+                }
+                eprint!("{}", table);
+                io::stderr().flush().ok();
+                last_lines = table.lines().count();
+            }
+        }))
+    } else {
+        None
+    };
+
     // Process entries in parallel, releasing the GIL
     py.detach(|| {
         entries_vec.par_iter().for_each(|entry| {
@@ -77,10 +137,14 @@ fn calculate_directory_sizes(
             let file_name = entry.file_name().to_string_lossy().to_string();
             let file_path = entry.path();
 
+            if verbose {
+                *current_entry.lock() = file_name.clone();
+            }
+
             let size = if use_inodes {
-                count_inodes_parallel(&file_path, &cancelled)
+                count_inodes_parallel(&file_path, &cancelled, base_dev, &current_entry)
             } else {
-                calculate_size_kb_parallel(&file_path, &cancelled)
+                calculate_size_kb_parallel(&file_path, &cancelled, base_dev, &current_entry)
             };
 
             if !cancelled.load(Ordering::Relaxed) {
@@ -89,28 +153,58 @@ fn calculate_directory_sizes(
 
             // Update progress periodically (skip equality check to avoid race condition)
             let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
-            if current.is_multiple_of(10) {
-                print_progress(current, total_entries);
+            if !live && current.is_multiple_of(10) {
+                let entry_name = if verbose {
+                    Some(current_entry.lock().clone())
+                } else {
+                    None
+                };
+                print_progress(current, total_entries, entry_name.as_deref());
             }
         });
     });
 
     // Ensure final progress state is shown after parallel iteration completes
-    print_progress(total_entries, total_entries);
+    if !live {
+        print_progress(total_entries, total_entries, None);
+    }
 
     // Signal the checker thread to stop and wait for it
     cancelled.store(true, Ordering::Relaxed);
     let _ = signal_checker.join();
+    if let Some(handle) = live_display {
+        let _ = handle.join();
+    }
 
     // Check for Python signals after computation
     if let Err(e) = py.check_signals() {
-        eprint!("\r{}\r", " ".repeat(50));
+        eprint!("\r{}\r", " ".repeat(80));
         io::stderr().flush().ok();
         return Err(e);
     }
 
-    // Clear progress bar
-    eprint!("\r{}\r", " ".repeat(50));
+    // Clear progress bar / live display
+    if live {
+        // Clear the live display: move up and erase
+        let snapshot: Vec<(String, u64)> = {
+            let r = results.lock();
+            r.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        };
+        let table = render_stats_table(
+            path,
+            &snapshot,
+            use_inodes,
+            false,
+            total_entries,
+            total_entries,
+        );
+        let lines = table.lines().count();
+        if lines > 0 {
+            eprint!("\x1b[{}A\x1b[J", lines);
+        }
+    } else {
+        eprint!("\r{}\r", " ".repeat(80));
+    }
     io::stderr().flush().ok();
 
     let final_results = match Arc::try_unwrap(results) {
@@ -122,10 +216,15 @@ fn calculate_directory_sizes(
 }
 
 /// Calculate total size in kilobytes using parallel jwalk
-fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
+fn calculate_size_kb_parallel(
+    path: &Path,
+    cancelled: &AtomicBool,
+    base_dev: Option<u64>,
+    current_entry: &Mutex<String>,
+) -> u64 {
     if path.is_file() {
         return fs::metadata(path)
-            .map(|m| m.len().div_ceil(1024))
+            .map(|m| (m.blocks() * 512).div_ceil(1024))
             .unwrap_or(0);
     }
 
@@ -146,10 +245,25 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
         if count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
             break;
         }
-        if entry.file_type().is_file() {
+        // Skip entries on different filesystems
+        if let Some(dev) = base_dev {
+            match entry.metadata() {
+                Ok(m) => {
+                    if m.dev() != dev {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        if entry.file_type().is_dir() {
+            if count % 100 == 0 {
+                *current_entry.lock() = entry.path().to_string_lossy().to_string();
+            }
+        } else if entry.file_type().is_file() {
             total += entry
                 .metadata()
-                .map(|m| m.len().div_ceil(1024))
+                .map(|m| (m.blocks() * 512).div_ceil(1024))
                 .unwrap_or(0);
         }
     }
@@ -157,24 +271,43 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
 }
 
 /// Count inodes using parallel jwalk
-fn count_inodes_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
+fn count_inodes_parallel(
+    path: &Path,
+    cancelled: &AtomicBool,
+    base_dev: Option<u64>,
+    current_entry: &Mutex<String>,
+) -> u64 {
     if !path.is_dir() {
         return 1;
     }
 
     let mut count: u64 = 0;
     let mut iter_count = 0;
-    for _ in JWalkDir::new(path)
+    for entry in JWalkDir::new(path)
         .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        count += 1;
         iter_count += 1;
         // Check cancellation periodically
         if iter_count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
             break;
         }
+        // Skip entries on different filesystems
+        if let Some(dev) = base_dev {
+            match entry.metadata() {
+                Ok(m) => {
+                    if m.dev() != dev {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        if entry.file_type().is_dir() && iter_count % 100 == 0 {
+            *current_entry.lock() = entry.path().to_string_lossy().to_string();
+        }
+        count += 1;
     }
     count
 }
@@ -186,8 +319,70 @@ fn num_cpus() -> usize {
         .unwrap_or(4)
 }
 
+/// Render the statistics table as a string (used for live display)
+fn render_stats_table(
+    dirname: &str,
+    entries: &[(String, u64)],
+    inodes: bool,
+    no_grouping: bool,
+    current: usize,
+    total: usize,
+) -> String {
+    let max_marks = 20;
+    let mut sorted: Vec<(String, u64)> = entries.to_vec();
+    sorted.sort_by_key(|k| k.1);
+
+    let total_size: u64 = sorted.iter().map(|(_, s)| s).sum();
+    let max_size = sorted.iter().map(|(_, s)| s).max().copied().unwrap_or(0);
+
+    let col0_name = if inodes { "inodes" } else { "Size" };
+    let mut out = format!(
+        "Statistics of directory \"{}\" ({}/{}):\n\n{:<14} {:<6} {:<20} {:<10}\n",
+        dirname, current, total, col0_name, "In %", "Histogram", "Name"
+    );
+
+    for (filename, file_size) in &sorted {
+        let nmarks = if max_size != 0 {
+            ((max_marks - 1) as f64 * (*file_size as f64) / (max_size as f64)) as usize + 1
+        } else {
+            max_marks
+        };
+        let percentage = if total_size != 0 {
+            100.0 * (*file_size as f64) / (total_size as f64)
+        } else {
+            0.0
+        };
+        let size_str = if inodes {
+            if no_grouping {
+                file_size.to_string()
+            } else {
+                format_with_grouping(*file_size)
+            }
+        } else {
+            format_size(*file_size)
+        };
+        let histogram = "#".repeat(nmarks);
+        out.push_str(&format!(
+            "{:<14} {:<6.2} {:<20} {:<10}\n",
+            size_str, percentage, histogram, filename
+        ));
+    }
+
+    let total_str = if inodes {
+        if no_grouping {
+            total_size.to_string()
+        } else {
+            format_with_grouping(total_size)
+        }
+    } else {
+        format_size(total_size)
+    };
+    out.push_str(&format!("\nTotal directory size: {}\n", total_str));
+    out
+}
+
 /// Print a progress bar to stderr
-fn print_progress(current: usize, total: usize) {
+fn print_progress(current: usize, total: usize, current_entry: Option<&str>) {
     let bar_width = 40;
     let progress = if total > 0 {
         current as f64 / total as f64
@@ -197,13 +392,35 @@ fn print_progress(current: usize, total: usize) {
     let filled = (bar_width as f64 * progress) as usize;
     let empty = bar_width - filled;
 
-    eprint!(
-        "\r[{}{}] {}/{}",
-        ">".repeat(filled),
-        "-".repeat(empty),
-        current,
-        total
-    );
+    match current_entry {
+        Some(name) => {
+            // Truncate long names to fit in terminal
+            let max_name_len = 30;
+            let display_name = if name.len() > max_name_len {
+                format!("{}...", &name[..max_name_len - 3])
+            } else {
+                name.to_string()
+            };
+            eprint!(
+                "\r{blank}\r[{bar}{empty}] {cur}/{tot} {name}",
+                blank = " ".repeat(80),
+                bar = ">".repeat(filled),
+                empty = "-".repeat(empty),
+                cur = current,
+                tot = total,
+                name = display_name,
+            );
+        }
+        None => {
+            eprint!(
+                "\r[{}{}] {}/{}",
+                ">".repeat(filled),
+                "-".repeat(empty),
+                current,
+                total
+            );
+        }
+    }
     io::stderr().flush().ok();
 }
 
@@ -266,7 +483,8 @@ fn json_escape(s: &str) -> String {
 
 /// Print the complete disk usage analysis
 #[pyfunction]
-#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false))]
+#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false, cross_mounts=false, verbose=false, live=false))]
+#[allow(clippy::too_many_arguments)]
 fn print_disk_usage(
     py: Python,
     dirname: &str,
@@ -274,6 +492,9 @@ fn print_disk_usage(
     no_grouping: bool,
     no_f: bool,
     json: bool,
+    cross_mounts: bool,
+    verbose: bool,
+    live: bool,
 ) -> PyResult<()> {
     let max_marks = 20;
 
@@ -303,7 +524,7 @@ fn print_disk_usage(
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut permission_error = false;
 
-    match calculate_directory_sizes(py, dirname, inodes) {
+    match calculate_directory_sizes(py, dirname, inodes, cross_mounts, verbose, live) {
         Ok(raw_sizes) => {
             for (filename, size) in raw_sizes {
                 let mut display_name = filename.clone();
@@ -462,6 +683,18 @@ struct Cli {
     /// Output results as JSON
     #[arg(short, long)]
     json: bool,
+
+    /// Cross mount boundaries (by default stays on the same filesystem)
+    #[arg(short = 'x', long)]
+    cross_mounts: bool,
+
+    /// Show directories being traversed
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Live-update statistics table during traversal
+    #[arg(short, long)]
+    live: bool,
 }
 
 /// Main entry point for the dustr command
@@ -486,6 +719,9 @@ fn main(py: Python, args: Vec<String>) -> PyResult<()> {
         cli.nogrouping,
         cli.no_f,
         cli.json,
+        cli.cross_mounts,
+        cli.verbose,
+        cli.live,
     )
 }
 
