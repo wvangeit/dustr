@@ -88,10 +88,12 @@ fn calculate_directory_sizes(
     });
 
     // Spawn live display thread if requested
+    let live_last_lines = Arc::new(AtomicUsize::new(0));
     let live_display = if live {
         let results_for_display = results.clone();
         let cancelled_for_display = cancelled.clone();
         let progress_for_display = progress.clone();
+        let last_lines_for_display = live_last_lines.clone();
         let dirname = path.to_string();
         Some(std::thread::spawn(move || {
             let mut last_lines = 0usize;
@@ -113,13 +115,15 @@ fn calculate_directory_sizes(
                     current,
                     total_entries,
                 );
+                let bar = format_progress_bar(current, total_entries);
                 // Move cursor up to overwrite previous output, then print
                 if last_lines > 0 {
                     eprint!("\x1b[{}A\x1b[J", last_lines);
                 }
-                eprint!("{}", table);
+                eprintln!("{}{}", table, bar);
                 io::stderr().flush().ok();
-                last_lines = table.lines().count();
+                last_lines = table.lines().count() + 1;
+                last_lines_for_display.store(last_lines, Ordering::Relaxed);
             }
         }))
     } else {
@@ -185,20 +189,9 @@ fn calculate_directory_sizes(
 
     // Clear progress bar / live display
     if live {
-        // Clear the live display: move up and erase
-        let snapshot: Vec<(String, u64)> = {
-            let r = results.lock();
-            r.iter().map(|(k, v)| (k.clone(), *v)).collect()
-        };
-        let table = render_stats_table(
-            path,
-            &snapshot,
-            use_inodes,
-            false,
-            total_entries,
-            total_entries,
-        );
-        let lines = table.lines().count();
+        // Use the actual line count last printed by the live thread
+        // so we don't overshoot and erase previous stdout output.
+        let lines = live_last_lines.load(Ordering::Relaxed);
         if lines > 0 {
             eprint!("\x1b[{}A\x1b[J", lines);
         }
@@ -381,16 +374,30 @@ fn render_stats_table(
     out
 }
 
-/// Print a progress bar to stderr
-fn print_progress(current: usize, total: usize, current_entry: Option<&str>) {
-    let bar_width = 40;
+/// Width of the rendered progress bar (number of characters between the brackets).
+const BAR_WIDTH: usize = 40;
+
+/// Format a progress bar as a string (no trailing newline)
+fn format_progress_bar(current: usize, total: usize) -> String {
     let progress = if total > 0 {
         current as f64 / total as f64
     } else {
         0.0
     };
-    let filled = (bar_width as f64 * progress) as usize;
-    let empty = bar_width - filled;
+    let filled = (BAR_WIDTH as f64 * progress) as usize;
+    let empty = BAR_WIDTH - filled;
+    format!(
+        "[{}{}] {}/{}",
+        ">".repeat(filled),
+        "-".repeat(empty),
+        current,
+        total
+    )
+}
+
+/// Print a progress bar to stderr
+fn print_progress(current: usize, total: usize, current_entry: Option<&str>) {
+    let bar = format_progress_bar(current, total);
 
     match current_entry {
         Some(name) => {
@@ -402,23 +409,14 @@ fn print_progress(current: usize, total: usize, current_entry: Option<&str>) {
                 name.to_string()
             };
             eprint!(
-                "\r{blank}\r[{bar}{empty}] {cur}/{tot} {name}",
+                "\r{blank}\r{bar} {name}",
                 blank = " ".repeat(80),
-                bar = ">".repeat(filled),
-                empty = "-".repeat(empty),
-                cur = current,
-                tot = total,
+                bar = bar,
                 name = display_name,
             );
         }
         None => {
-            eprint!(
-                "\r[{}{}] {}/{}",
-                ">".repeat(filled),
-                "-".repeat(empty),
-                current,
-                total
-            );
+            eprint!("\r{}", bar);
         }
     }
     io::stderr().flush().ok();
@@ -733,4 +731,43 @@ fn _dustr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(print_disk_usage, m)?)?;
     m.add_function(wrap_pyfunction!(main, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_bar_zero_total() {
+        // Avoid divide-by-zero; should render an empty bar.
+        let bar = format_progress_bar(0, 0);
+        assert_eq!(bar, format!("[{}] 0/0", "-".repeat(BAR_WIDTH)));
+    }
+
+    #[test]
+    fn progress_bar_half() {
+        let bar = format_progress_bar(5, 10);
+        let filled = BAR_WIDTH / 2;
+        assert_eq!(
+            bar,
+            format!(
+                "[{}{}] 5/10",
+                ">".repeat(filled),
+                "-".repeat(BAR_WIDTH - filled)
+            )
+        );
+    }
+
+    #[test]
+    fn progress_bar_full() {
+        let bar = format_progress_bar(10, 10);
+        assert_eq!(bar, format!("[{}] 10/10", ">".repeat(BAR_WIDTH)));
+    }
+
+    #[test]
+    fn progress_bar_no_newline() {
+        // The live view appends its own newline; the bar itself must not.
+        let bar = format_progress_bar(3, 7);
+        assert!(!bar.contains('\n'));
+    }
 }

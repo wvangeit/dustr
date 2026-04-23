@@ -1,4 +1,4 @@
-.PHONY: build develop release test check clean distclean lint fmt help
+.PHONY: build develop release test check clean distclean lint lint-all fmt help
 
 VENV := .venv
 BIN := $(VENV)/bin
@@ -26,8 +26,12 @@ test: develop ## Run tests
 check: ## Run cargo check
 	cargo check
 
-lint: ## Run clippy and Python linters
-	cargo clippy -- -D warnings
+lint: ## Run clippy (fast: lib only, skip deps) and Python linters
+	cargo clippy --no-deps -- -D warnings
+	$(BIN)/ruff check python/
+
+lint-all: ## Run clippy on all targets including tests/examples (slower)
+	cargo clippy --all-targets --no-deps -- -D warnings
 	$(BIN)/ruff check python/
 
 fmt: ## Format Rust and Python code
