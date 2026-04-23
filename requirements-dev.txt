@@ -1,3 +1,4 @@
 maturin
+pre-commit
 pytest
 ruff
