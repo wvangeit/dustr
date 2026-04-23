@@ -6,16 +6,19 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Calculate directory sizes for all items in a directory (parallel version)
 #[pyfunction]
+#[pyo3(signature = (path, use_inodes, cross_mounts=false))]
 fn calculate_directory_sizes(
     py: Python,
     path: &str,
     use_inodes: bool,
+    cross_mounts: bool,
 ) -> PyResult<HashMap<String, u64>> {
     let base_path = Path::new(path);
 
@@ -78,9 +81,9 @@ fn calculate_directory_sizes(
             let file_path = entry.path();
 
             let size = if use_inodes {
-                count_inodes_parallel(&file_path, &cancelled)
+                count_inodes_parallel(&file_path, &cancelled, cross_mounts)
             } else {
-                calculate_size_kb_parallel(&file_path, &cancelled)
+                calculate_size_kb_parallel(&file_path, &cancelled, cross_mounts)
             };
 
             if !cancelled.load(Ordering::Relaxed) {
@@ -122,7 +125,7 @@ fn calculate_directory_sizes(
 }
 
 /// Calculate total size in kilobytes using parallel jwalk
-fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
+fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool, cross_mounts: bool) -> u64 {
     if path.is_file() {
         return fs::metadata(path)
             .map(|m| m.len().div_ceil(1024))
@@ -132,6 +135,12 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
     if !path.is_dir() {
         return 0;
     }
+
+    let root_dev = if !cross_mounts {
+        fs::metadata(path).map(|m| Some(m.dev())).unwrap_or(None)
+    } else {
+        None
+    };
 
     // Use jwalk for parallel directory traversal
     let mut total: u64 = 0;
@@ -146,6 +155,14 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
         if count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
             break;
         }
+        // Skip entries on different filesystems
+        if let Some(dev) = root_dev {
+            if let Ok(m) = entry.metadata() {
+                if m.dev() != dev {
+                    continue;
+                }
+            }
+        }
         if entry.file_type().is_file() {
             total += entry
                 .metadata()
@@ -157,24 +174,38 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
 }
 
 /// Count inodes using parallel jwalk
-fn count_inodes_parallel(path: &Path, cancelled: &AtomicBool) -> u64 {
+fn count_inodes_parallel(path: &Path, cancelled: &AtomicBool, cross_mounts: bool) -> u64 {
     if !path.is_dir() {
         return 1;
     }
 
+    let root_dev = if !cross_mounts {
+        fs::metadata(path).map(|m| Some(m.dev())).unwrap_or(None)
+    } else {
+        None
+    };
+
     let mut count: u64 = 0;
     let mut iter_count = 0;
-    for _ in JWalkDir::new(path)
+    for entry in JWalkDir::new(path)
         .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        count += 1;
         iter_count += 1;
         // Check cancellation periodically
         if iter_count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
             break;
         }
+        // Skip entries on different filesystems
+        if let Some(dev) = root_dev {
+            if let Ok(m) = entry.metadata() {
+                if m.dev() != dev {
+                    continue;
+                }
+            }
+        }
+        count += 1;
     }
     count
 }
@@ -266,7 +297,7 @@ fn json_escape(s: &str) -> String {
 
 /// Print the complete disk usage analysis
 #[pyfunction]
-#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false))]
+#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false, cross_mounts=false))]
 fn print_disk_usage(
     py: Python,
     dirname: &str,
@@ -274,6 +305,7 @@ fn print_disk_usage(
     no_grouping: bool,
     no_f: bool,
     json: bool,
+    cross_mounts: bool,
 ) -> PyResult<()> {
     let max_marks = 20;
 
@@ -303,7 +335,7 @@ fn print_disk_usage(
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut permission_error = false;
 
-    match calculate_directory_sizes(py, dirname, inodes) {
+    match calculate_directory_sizes(py, dirname, inodes, cross_mounts) {
         Ok(raw_sizes) => {
             for (filename, size) in raw_sizes {
                 let mut display_name = filename.clone();
@@ -462,6 +494,10 @@ struct Cli {
     /// Output results as JSON
     #[arg(short, long)]
     json: bool,
+
+    /// Cross mount boundaries (by default stays on the same filesystem)
+    #[arg(short = 'x', long)]
+    cross_mounts: bool,
 }
 
 /// Main entry point for the dustr command
@@ -486,6 +522,7 @@ fn main(py: Python, args: Vec<String>) -> PyResult<()> {
         cli.nogrouping,
         cli.no_f,
         cli.json,
+        cli.cross_mounts,
     )
 }
 
