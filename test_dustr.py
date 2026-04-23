@@ -136,6 +136,40 @@ def test_cross_mounts():
         assert inodes_default == inodes_cross
 
 
+def test_verbose():
+    """Test that verbose parameter is accepted and results are unchanged"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "file1.txt").write_text("Hello" * 100)
+        subdir = Path(tmpdir) / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").write_text("World" * 200)
+
+        sizes_normal = calculate_directory_sizes(tmpdir, use_inodes=False)
+        sizes_verbose = calculate_directory_sizes(
+            tmpdir, use_inodes=False, verbose=True
+        )
+
+        assert sizes_normal == sizes_verbose
+
+
+def test_disk_usage_vs_apparent_size():
+    """Test that sizes reflect actual disk usage (st_blocks), not apparent size"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        testfile = Path(tmpdir) / "testfile.bin"
+        testfile.write_bytes(b"x" * 4096)
+
+        sizes = calculate_directory_sizes(tmpdir, use_inodes=False)
+
+        # Compare with what os.stat reports for actual blocks
+        stat = os.stat(testfile)
+        expected_kb = (stat.st_blocks * 512 + 1023) // 1024  # div_ceil
+
+        assert sizes["testfile.bin"] == expected_kb, (
+            f"Reported {sizes['testfile.bin']} KB, "
+            f"expected {expected_kb} KB from st_blocks"
+        )
+
+
 if __name__ == "__main__":
     test_calculate_directory_sizes()
     test_calculate_directory_sizes_inodes()
@@ -143,4 +177,6 @@ if __name__ == "__main__":
     test_nonexistent_directory()
     test_permission_denied()
     test_cross_mounts()
+    test_verbose()
+    test_disk_usage_vs_apparent_size()
     print("All tests passed!")

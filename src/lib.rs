@@ -13,12 +13,13 @@ use std::sync::Arc;
 
 /// Calculate directory sizes for all items in a directory (parallel version)
 #[pyfunction]
-#[pyo3(signature = (path, use_inodes, cross_mounts=false))]
+#[pyo3(signature = (path, use_inodes, cross_mounts=false, verbose=false))]
 fn calculate_directory_sizes(
     py: Python,
     path: &str,
     use_inodes: bool,
     cross_mounts: bool,
+    verbose: bool,
 ) -> PyResult<HashMap<String, u64>> {
     let base_path = Path::new(path);
 
@@ -45,6 +46,7 @@ fn calculate_directory_sizes(
     let progress = Arc::new(AtomicUsize::new(0));
     let cancelled = Arc::new(AtomicBool::new(false));
     let results: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    let current_entry: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
     // Clone for the signal checking thread
     let cancelled_for_thread = cancelled.clone();
@@ -80,10 +82,14 @@ fn calculate_directory_sizes(
             let file_name = entry.file_name().to_string_lossy().to_string();
             let file_path = entry.path();
 
+            if verbose {
+                *current_entry.lock() = file_name.clone();
+            }
+
             let size = if use_inodes {
-                count_inodes_parallel(&file_path, &cancelled, cross_mounts)
+                count_inodes_parallel(&file_path, &cancelled, cross_mounts, &current_entry)
             } else {
-                calculate_size_kb_parallel(&file_path, &cancelled, cross_mounts)
+                calculate_size_kb_parallel(&file_path, &cancelled, cross_mounts, &current_entry)
             };
 
             if !cancelled.load(Ordering::Relaxed) {
@@ -93,13 +99,18 @@ fn calculate_directory_sizes(
             // Update progress periodically (skip equality check to avoid race condition)
             let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
             if current.is_multiple_of(10) {
-                print_progress(current, total_entries);
+                let entry_name = if verbose {
+                    Some(current_entry.lock().clone())
+                } else {
+                    None
+                };
+                print_progress(current, total_entries, entry_name.as_deref());
             }
         });
     });
 
     // Ensure final progress state is shown after parallel iteration completes
-    print_progress(total_entries, total_entries);
+    print_progress(total_entries, total_entries, None);
 
     // Signal the checker thread to stop and wait for it
     cancelled.store(true, Ordering::Relaxed);
@@ -107,13 +118,13 @@ fn calculate_directory_sizes(
 
     // Check for Python signals after computation
     if let Err(e) = py.check_signals() {
-        eprint!("\r{}\r", " ".repeat(50));
+        eprint!("\r{}\r", " ".repeat(80));
         io::stderr().flush().ok();
         return Err(e);
     }
 
     // Clear progress bar
-    eprint!("\r{}\r", " ".repeat(50));
+    eprint!("\r{}\r", " ".repeat(80));
     io::stderr().flush().ok();
 
     let final_results = match Arc::try_unwrap(results) {
@@ -125,10 +136,15 @@ fn calculate_directory_sizes(
 }
 
 /// Calculate total size in kilobytes using parallel jwalk
-fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool, cross_mounts: bool) -> u64 {
+fn calculate_size_kb_parallel(
+    path: &Path,
+    cancelled: &AtomicBool,
+    cross_mounts: bool,
+    current_entry: &Mutex<String>,
+) -> u64 {
     if path.is_file() {
         return fs::metadata(path)
-            .map(|m| m.len().div_ceil(1024))
+            .map(|m| (m.blocks() * 512).div_ceil(1024))
             .unwrap_or(0);
     }
 
@@ -163,10 +179,14 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool, cross_mounts:
                 }
             }
         }
-        if entry.file_type().is_file() {
+        if entry.file_type().is_dir() {
+            if count % 100 == 0 {
+                *current_entry.lock() = entry.path().to_string_lossy().to_string();
+            }
+        } else if entry.file_type().is_file() {
             total += entry
                 .metadata()
-                .map(|m| m.len().div_ceil(1024))
+                .map(|m| (m.blocks() * 512).div_ceil(1024))
                 .unwrap_or(0);
         }
     }
@@ -174,7 +194,12 @@ fn calculate_size_kb_parallel(path: &Path, cancelled: &AtomicBool, cross_mounts:
 }
 
 /// Count inodes using parallel jwalk
-fn count_inodes_parallel(path: &Path, cancelled: &AtomicBool, cross_mounts: bool) -> u64 {
+fn count_inodes_parallel(
+    path: &Path,
+    cancelled: &AtomicBool,
+    cross_mounts: bool,
+    current_entry: &Mutex<String>,
+) -> u64 {
     if !path.is_dir() {
         return 1;
     }
@@ -205,6 +230,9 @@ fn count_inodes_parallel(path: &Path, cancelled: &AtomicBool, cross_mounts: bool
                 }
             }
         }
+        if entry.file_type().is_dir() && iter_count % 100 == 0 {
+            *current_entry.lock() = entry.path().to_string_lossy().to_string();
+        }
         count += 1;
     }
     count
@@ -218,7 +246,7 @@ fn num_cpus() -> usize {
 }
 
 /// Print a progress bar to stderr
-fn print_progress(current: usize, total: usize) {
+fn print_progress(current: usize, total: usize, current_entry: Option<&str>) {
     let bar_width = 40;
     let progress = if total > 0 {
         current as f64 / total as f64
@@ -228,13 +256,35 @@ fn print_progress(current: usize, total: usize) {
     let filled = (bar_width as f64 * progress) as usize;
     let empty = bar_width - filled;
 
-    eprint!(
-        "\r[{}{}] {}/{}",
-        ">".repeat(filled),
-        "-".repeat(empty),
-        current,
-        total
-    );
+    match current_entry {
+        Some(name) => {
+            // Truncate long names to fit in terminal
+            let max_name_len = 30;
+            let display_name = if name.len() > max_name_len {
+                format!("{}...", &name[..max_name_len - 3])
+            } else {
+                name.to_string()
+            };
+            eprint!(
+                "\r{blank}\r[{bar}{empty}] {cur}/{tot} {name}",
+                blank = " ".repeat(80),
+                bar = ">".repeat(filled),
+                empty = "-".repeat(empty),
+                cur = current,
+                tot = total,
+                name = display_name,
+            );
+        }
+        None => {
+            eprint!(
+                "\r[{}{}] {}/{}",
+                ">".repeat(filled),
+                "-".repeat(empty),
+                current,
+                total
+            );
+        }
+    }
     io::stderr().flush().ok();
 }
 
@@ -297,7 +347,7 @@ fn json_escape(s: &str) -> String {
 
 /// Print the complete disk usage analysis
 #[pyfunction]
-#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false, cross_mounts=false))]
+#[pyo3(signature = (dirname, inodes=false, no_grouping=false, no_f=false, json=false, cross_mounts=false, verbose=false))]
 fn print_disk_usage(
     py: Python,
     dirname: &str,
@@ -306,6 +356,7 @@ fn print_disk_usage(
     no_f: bool,
     json: bool,
     cross_mounts: bool,
+    verbose: bool,
 ) -> PyResult<()> {
     let max_marks = 20;
 
@@ -335,7 +386,7 @@ fn print_disk_usage(
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut permission_error = false;
 
-    match calculate_directory_sizes(py, dirname, inodes, cross_mounts) {
+    match calculate_directory_sizes(py, dirname, inodes, cross_mounts, verbose) {
         Ok(raw_sizes) => {
             for (filename, size) in raw_sizes {
                 let mut display_name = filename.clone();
@@ -498,6 +549,10 @@ struct Cli {
     /// Cross mount boundaries (by default stays on the same filesystem)
     #[arg(short = 'x', long)]
     cross_mounts: bool,
+
+    /// Show directories being traversed
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 /// Main entry point for the dustr command
@@ -523,6 +578,7 @@ fn main(py: Python, args: Vec<String>) -> PyResult<()> {
         cli.no_f,
         cli.json,
         cli.cross_mounts,
+        cli.verbose,
     )
 }
 
