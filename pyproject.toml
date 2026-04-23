@@ -21,6 +21,9 @@ dustr = "dustr:main"
 
 [project.urls]
 homepage = "https://github.com/wvangeit/dustr"
+repository = "https://github.com/wvangeit/dustr"
+changelog = "https://github.com/wvangeit/dustr/releases"
+"Crate" = "https://crates.io/crates/dustr-cli"
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
