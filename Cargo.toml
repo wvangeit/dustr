@@ -1,7 +1,13 @@
 [package]
-name = "dustr"
-version = "0.1.15"
+name = "dustr-cli"
+version = "1.0.0"
 edition = "2021"
+description = "Fast Rust-based disk usage analyzer with histogram visualization"
+license = "LGPL-3.0-or-later"
+repository = "https://github.com/wvangeit/dustr"
+readme = "README.md"
+keywords = ["disk-usage", "du", "cli", "histogram", "terminal"]
+categories = ["command-line-utilities", "filesystem"]
 
 [lib]
 name = "dustr"

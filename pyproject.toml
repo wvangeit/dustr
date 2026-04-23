@@ -9,6 +9,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.9"
 dynamic = ["version"]
+keywords = ["disk-usage", "du", "disk-space", "histogram", "cli", "rust", "directory-size", "terminal"]
 classifiers = [
     "Topic :: Utilities",
     "Programming Language :: Rust",
