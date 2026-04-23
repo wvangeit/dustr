@@ -103,10 +103,44 @@ def test_permission_denied():
                 os.chmod(protected, 0o755)
 
 
+def test_cross_mounts():
+    """Test that cross_mounts parameter is accepted and results match on same fs"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "file1.txt").write_text("Hello" * 100)
+        subdir = Path(tmpdir) / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").write_text("World" * 200)
+
+        # Both should give the same results on a single filesystem
+        sizes_default = calculate_directory_sizes(tmpdir, use_inodes=False)
+        sizes_no_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=False, cross_mounts=False
+        )
+        sizes_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=False, cross_mounts=True
+        )
+
+        assert sizes_default == sizes_no_cross
+        assert sizes_default == sizes_cross
+
+        # Same for inodes
+        inodes_default = calculate_directory_sizes(tmpdir, use_inodes=True)
+        inodes_no_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=True, cross_mounts=False
+        )
+        inodes_cross = calculate_directory_sizes(
+            tmpdir, use_inodes=True, cross_mounts=True
+        )
+
+        assert inodes_default == inodes_no_cross
+        assert inodes_default == inodes_cross
+
+
 if __name__ == "__main__":
     test_calculate_directory_sizes()
     test_calculate_directory_sizes_inodes()
     test_get_file_type_indicator()
     test_nonexistent_directory()
     test_permission_denied()
+    test_cross_mounts()
     print("All tests passed!")
