@@ -88,10 +88,12 @@ fn calculate_directory_sizes(
     });
 
     // Spawn live display thread if requested
+    let live_last_lines = Arc::new(AtomicUsize::new(0));
     let live_display = if live {
         let results_for_display = results.clone();
         let cancelled_for_display = cancelled.clone();
         let progress_for_display = progress.clone();
+        let last_lines_for_display = live_last_lines.clone();
         let dirname = path.to_string();
         Some(std::thread::spawn(move || {
             let mut last_lines = 0usize;
@@ -121,6 +123,7 @@ fn calculate_directory_sizes(
                 eprintln!("{}{}", table, bar);
                 io::stderr().flush().ok();
                 last_lines = table.lines().count() + 1;
+                last_lines_for_display.store(last_lines, Ordering::Relaxed);
             }
         }))
     } else {
@@ -186,21 +189,9 @@ fn calculate_directory_sizes(
 
     // Clear progress bar / live display
     if live {
-        // Clear the live display: move up and erase
-        let snapshot: Vec<(String, u64)> = {
-            let r = results.lock();
-            r.iter().map(|(k, v)| (k.clone(), *v)).collect()
-        };
-        let table = render_stats_table(
-            path,
-            &snapshot,
-            use_inodes,
-            false,
-            total_entries,
-            total_entries,
-        );
-        // +1 accounts for the progress bar line appended in the live thread
-        let lines = table.lines().count() + 1;
+        // Use the actual line count last printed by the live thread
+        // so we don't overshoot and erase previous stdout output.
+        let lines = live_last_lines.load(Ordering::Relaxed);
         if lines > 0 {
             eprint!("\x1b[{}A\x1b[J", lines);
         }
