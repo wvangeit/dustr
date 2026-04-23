@@ -11,7 +11,15 @@ $(VENV):
 	@command -v uv >/dev/null 2>&1 || { echo "Installing uv..."; pip install uv; }
 	uv venv $(VENV)
 
-develop: $(VENV) ## Build and install in current Python env (dev mode)
+.PHONY: ensure-venv
+ensure-venv:
+	@if [ ! -x "$(BIN)/python3" ] || ! "$(BIN)/python3" -c "" 2>/dev/null; then \
+		echo "Recreating broken venv..."; \
+		rm -rf $(VENV); \
+		$(MAKE) $(VENV); \
+	fi
+
+develop: $(VENV) ensure-venv ## Build and install in current Python env (dev mode)
 	uv pip install -r requirements-dev.txt
 	$(BIN)/maturin develop
 

@@ -175,8 +175,6 @@ jobs:
   build-wheels:
     name: Build wheels on ${{ matrix.os }} (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
     needs: [ release ]
     strategy:
       matrix:
