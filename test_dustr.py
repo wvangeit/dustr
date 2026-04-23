@@ -170,6 +170,20 @@ def test_disk_usage_vs_apparent_size():
         )
 
 
+def test_live():
+    """Test that live parameter is accepted and results are unchanged"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "file1.txt").write_text("Hello" * 100)
+        subdir = Path(tmpdir) / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").write_text("World" * 200)
+
+        sizes_normal = calculate_directory_sizes(tmpdir, use_inodes=False)
+        sizes_live = calculate_directory_sizes(tmpdir, use_inodes=False, live=True)
+
+        assert sizes_normal == sizes_live
+
+
 if __name__ == "__main__":
     test_calculate_directory_sizes()
     test_calculate_directory_sizes_inodes()
@@ -179,4 +193,5 @@ if __name__ == "__main__":
     test_cross_mounts()
     test_verbose()
     test_disk_usage_vs_apparent_size()
+    test_live()
     print("All tests passed!")
