@@ -1,9 +1,10 @@
 # Dustr
 
-[![PyPI version](https://img.shields.io/pypi/v/dustr)](https://pypi.org/project/dustr/)
 [![Build](https://github.com/wvangeit/dustr/actions/workflows/build.yml/badge.svg)](https://github.com/wvangeit/dustr/actions/workflows/build.yml)
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/dustr)](https://pypi.org/project/dustr/)
+[![PyPI version](https://img.shields.io/pypi/v/dustr)](https://pypi.org/project/dustr/)
+[![Crates.io](https://img.shields.io/crates/v/dustr-cli)](https://crates.io/crates/dustr-cli)
 [![License](https://img.shields.io/pypi/l/dustr)](https://github.com/wvangeit/dustr/blob/main/LICENSE.txt)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/dustr)](https://pypi.org/project/dustr/)
 
 Dustr is a Rust-based implementation of [duk](https://github.com/wvangeit/duk), a commandline utility that shows disk usage statistics in a directory with a histogram visualization.
 
