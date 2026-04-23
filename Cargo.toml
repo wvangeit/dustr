@@ -1,5 +1,5 @@
 [package]
-name = "dustr"
+name = "dustr-cli"
 version = "0.1.15"
 edition = "2021"
 description = "Fast Rust-based disk usage analyzer with histogram visualization"
