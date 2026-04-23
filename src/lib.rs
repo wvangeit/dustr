@@ -113,13 +113,14 @@ fn calculate_directory_sizes(
                     current,
                     total_entries,
                 );
+                let bar = format_progress_bar(current, total_entries);
                 // Move cursor up to overwrite previous output, then print
                 if last_lines > 0 {
                     eprint!("\x1b[{}A\x1b[J", last_lines);
                 }
-                eprint!("{}", table);
+                eprintln!("{}{}", table, bar);
                 io::stderr().flush().ok();
-                last_lines = table.lines().count();
+                last_lines = table.lines().count() + 1;
             }
         }))
     } else {
@@ -198,7 +199,8 @@ fn calculate_directory_sizes(
             total_entries,
             total_entries,
         );
-        let lines = table.lines().count();
+        // +1 accounts for the progress bar line appended in the live thread
+        let lines = table.lines().count() + 1;
         if lines > 0 {
             eprint!("\x1b[{}A\x1b[J", lines);
         }
@@ -379,6 +381,25 @@ fn render_stats_table(
     };
     out.push_str(&format!("\nTotal directory size: {}\n", total_str));
     out
+}
+
+/// Format a progress bar as a string (no trailing newline)
+fn format_progress_bar(current: usize, total: usize) -> String {
+    let bar_width = 40;
+    let progress = if total > 0 {
+        current as f64 / total as f64
+    } else {
+        0.0
+    };
+    let filled = (bar_width as f64 * progress) as usize;
+    let empty = bar_width - filled;
+    format!(
+        "[{}{}] {}/{}",
+        ">".repeat(filled),
+        "-".repeat(empty),
+        current,
+        total
+    )
 }
 
 /// Print a progress bar to stderr
