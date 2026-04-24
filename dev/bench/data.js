@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777020721017,
+  "lastUpdate": 1777021815990,
   "repoUrl": "https://github.com/wvangeit/dustr",
   "entries": {
     "Benchmark": [
@@ -73,6 +73,79 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0023377620987256376",
             "extra": "mean: 67.63919930769518 msec\nrounds: 13"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "werner.vangeit@gmail.com",
+            "name": "Werner Van Geit",
+            "username": "wvangeit"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5dbe7281bffe341a5b4ff8863f925272c1299799",
+          "message": "Add benchmark sticker (#23)",
+          "timestamp": "2026-04-24T11:09:22+02:00",
+          "tree_id": "6ae32256230de745014a118396fde1447edb5e87",
+          "url": "https://github.com/wvangeit/dustr/commit/5dbe7281bffe341a5b4ff8863f925272c1299799"
+        },
+        "date": 1777021815125,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "test_dustr.py::test_bench_sizes_small",
+            "value": 721.249954589107,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021654749215165373",
+            "extra": "mean: 1.3864818897211517 msec\nrounds: 399"
+          },
+          {
+            "name": "test_dustr.py::test_bench_sizes_medium",
+            "value": 108.71642055532706,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006524866911159584",
+            "extra": "mean: 9.198242500001076 msec\nrounds: 104"
+          },
+          {
+            "name": "test_dustr.py::test_bench_sizes_large",
+            "value": 37.52016490443284,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013272354498469138",
+            "extra": "mean: 26.652334885709802 msec\nrounds: 35"
+          },
+          {
+            "name": "test_dustr.py::test_bench_inodes_small",
+            "value": 777.2121816020284,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024042468303687124",
+            "extra": "mean: 1.2866499312179465 msec\nrounds: 945"
+          },
+          {
+            "name": "test_dustr.py::test_bench_inodes_medium",
+            "value": 130.98220307896838,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00043778575237250685",
+            "extra": "mean: 7.634624983343012 msec\nrounds: 120"
+          },
+          {
+            "name": "test_dustr.py::test_bench_inodes_large",
+            "value": 48.81825910247878,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010662075902568447",
+            "extra": "mean: 20.484138893621964 msec\nrounds: 47"
+          },
+          {
+            "name": "test_dustr.py::test_bench_deep_tree",
+            "value": 16.171101988480807,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001765014166970202",
+            "extra": "mean: 61.83870466665363 msec\nrounds: 15"
           }
         ]
       }
