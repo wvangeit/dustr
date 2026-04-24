@@ -212,7 +212,76 @@ def test_ctrlc_exits_quickly():
         raise AssertionError("dustr did not exit within 10 seconds after SIGINT")
 
     elapsed = time.monotonic() - t0
-    assert elapsed < 5, f"dustr took {elapsed:.1f}s to exit after SIGINT (expected < 5s)"
+    assert (
+        elapsed < 5
+    ), f"dustr took {elapsed:.1f}s to exit after SIGINT (expected < 5s)"
+
+
+# ---------------------------------------------------------------------------
+# Benchmarks (run with: pytest test_dustr.py -k bench --benchmark-only)
+# ---------------------------------------------------------------------------
+
+
+def _make_tree(root, dirs, files_per_dir, file_size=1024):
+    """Create a directory tree with the given shape."""
+    for i in range(dirs):
+        d = Path(root) / f"dir_{i:04d}"
+        d.mkdir()
+        for j in range(files_per_dir):
+            (d / f"file_{j:04d}.bin").write_bytes(b"x" * file_size)
+
+
+def test_bench_sizes_small(benchmark, tmp_path):
+    """Benchmark size calculation: 10 dirs x 10 files = 100 files"""
+    _make_tree(tmp_path, dirs=10, files_per_dir=10)
+    benchmark(calculate_directory_sizes, str(tmp_path), False)
+
+
+def test_bench_sizes_medium(benchmark, tmp_path):
+    """Benchmark size calculation: 50 dirs x 50 files = 2500 files"""
+    _make_tree(tmp_path, dirs=50, files_per_dir=50)
+    benchmark(calculate_directory_sizes, str(tmp_path), False)
+
+
+def test_bench_sizes_large(benchmark, tmp_path):
+    """Benchmark size calculation: 100 dirs x 100 files = 10000 files"""
+    _make_tree(tmp_path, dirs=100, files_per_dir=100)
+    benchmark(calculate_directory_sizes, str(tmp_path), False)
+
+
+def test_bench_inodes_small(benchmark, tmp_path):
+    """Benchmark inode counting: 10 dirs x 10 files = 100 files"""
+    _make_tree(tmp_path, dirs=10, files_per_dir=10)
+    benchmark(calculate_directory_sizes, str(tmp_path), True)
+
+
+def test_bench_inodes_medium(benchmark, tmp_path):
+    """Benchmark inode counting: 50 dirs x 50 files = 2500 files"""
+    _make_tree(tmp_path, dirs=50, files_per_dir=50)
+    benchmark(calculate_directory_sizes, str(tmp_path), True)
+
+
+def test_bench_inodes_large(benchmark, tmp_path):
+    """Benchmark inode counting: 100 dirs x 100 files = 10000 files"""
+    _make_tree(tmp_path, dirs=100, files_per_dir=100)
+    benchmark(calculate_directory_sizes, str(tmp_path), True)
+
+
+def test_bench_deep_tree(benchmark, tmp_path):
+    """Benchmark on a deep directory tree: 5 levels, 5 dirs each, 5 files each"""
+
+    def _make_deep(parent, depth):
+        if depth == 0:
+            return
+        for i in range(5):
+            d = Path(parent) / f"d{depth}_{i}"
+            d.mkdir()
+            for j in range(5):
+                (d / f"f_{j}.bin").write_bytes(b"x" * 512)
+            _make_deep(d, depth - 1)
+
+    _make_deep(tmp_path, depth=5)
+    benchmark(calculate_directory_sizes, str(tmp_path), False)
 
 
 if __name__ == "__main__":
