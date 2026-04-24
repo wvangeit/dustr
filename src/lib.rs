@@ -3,6 +3,7 @@ use jwalk::WalkDir as JWalkDir;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use signal_hook::consts::SIGINT;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -64,28 +65,22 @@ fn calculate_directory_sizes(
     let results: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
     let current_entry: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
-    // Clone for the signal checking thread
-    let cancelled_for_thread = cancelled.clone();
-
-    // Spawn a thread to check for Ctrl+C while holding the GIL
-    let signal_checker = std::thread::spawn(move || {
-        // This thread will periodically reacquire the GIL to check signals
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if cancelled_for_thread.load(Ordering::Relaxed) {
-                break;
+    // Register OS signal handler to set cancelled flag directly on Ctrl+C.
+    // This is instant (no GIL needed, no thread polling) and additive
+    // (Python's own SIGINT handler still fires for KeyboardInterrupt).
+    let signal_id = match signal_hook::flag::register(SIGINT, cancelled.clone()) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            if verbose {
+                eprintln!(
+                    "Warning: failed to register SIGINT handler: {}. \
+                     Ctrl+C responsiveness may be reduced.",
+                    e
+                );
             }
-            // Try to check Python signals
-            Python::attach(|py| {
-                if py.check_signals().is_err() {
-                    cancelled_for_thread.store(true, Ordering::Relaxed);
-                }
-            });
-            if cancelled_for_thread.load(Ordering::Relaxed) {
-                break;
-            }
+            None
         }
-    });
+    };
 
     // Spawn live display thread if requested
     let live_last_lines = Arc::new(AtomicUsize::new(0));
@@ -173,9 +168,12 @@ fn calculate_directory_sizes(
         print_progress(total_entries, total_entries, None);
     }
 
-    // Signal the checker thread to stop and wait for it
+    // Unregister our signal handler now that computation is done
+    if let Some(id) = signal_id {
+        signal_hook::low_level::unregister(id);
+    }
+    // Stop the live display thread
     cancelled.store(true, Ordering::Relaxed);
-    let _ = signal_checker.join();
     if let Some(handle) = live_display {
         let _ = handle.join();
     }
@@ -233,11 +231,11 @@ fn calculate_size_kb_parallel(
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        // Check cancellation periodically
-        count += 1;
-        if count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
+        // Check cancellation every iteration (atomic relaxed load is ~1ns, negligible vs I/O)
+        if cancelled.load(Ordering::Relaxed) {
             break;
         }
+        count += 1;
         // Skip entries on different filesystems
         if let Some(dev) = base_dev {
             match entry.metadata() {
@@ -281,11 +279,11 @@ fn count_inodes_parallel(
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        iter_count += 1;
-        // Check cancellation periodically
-        if iter_count % 1000 == 0 && cancelled.load(Ordering::Relaxed) {
+        // Check cancellation every iteration (atomic relaxed load is ~1ns, negligible vs I/O)
+        if cancelled.load(Ordering::Relaxed) {
             break;
         }
+        iter_count += 1;
         // Skip entries on different filesystems
         if let Some(dev) = base_dev {
             match entry.metadata() {
