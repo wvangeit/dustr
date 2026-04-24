@@ -68,7 +68,19 @@ fn calculate_directory_sizes(
     // Register OS signal handler to set cancelled flag directly on Ctrl+C.
     // This is instant (no GIL needed, no thread polling) and additive
     // (Python's own SIGINT handler still fires for KeyboardInterrupt).
-    let signal_id = signal_hook::flag::register(SIGINT, cancelled.clone()).ok();
+    let signal_id = match signal_hook::flag::register(SIGINT, cancelled.clone()) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            if verbose {
+                eprintln!(
+                    "Warning: failed to register SIGINT handler: {}. \
+                     Ctrl+C responsiveness may be reduced.",
+                    e
+                );
+            }
+            None
+        }
+    };
 
     // Spawn live display thread if requested
     let live_last_lines = Arc::new(AtomicUsize::new(0));
