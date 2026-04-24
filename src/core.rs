@@ -22,9 +22,9 @@ pub enum DustrError {
 impl std::fmt::Display for DustrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DustrError::NotFound(msg) => write!(f, "Not found: {}", msg),
-            DustrError::PermissionDenied(msg) => write!(f, "Permission denied: {}", msg),
-            DustrError::OsError(msg) => write!(f, "OS error: {}", msg),
+            DustrError::NotFound(msg) => write!(f, "{}", msg),
+            DustrError::PermissionDenied(msg) => write!(f, "{}", msg),
+            DustrError::OsError(msg) => write!(f, "{}", msg),
             DustrError::Cancelled => write!(f, "Cancelled"),
         }
     }
@@ -47,14 +47,32 @@ pub fn calculate_directory_sizes(
         )));
     }
 
+    if !base_path.is_dir() {
+        return Err(DustrError::OsError(format!("Not a directory: {}", path)));
+    }
+
     let entries = match fs::read_dir(base_path) {
         Ok(entries) => entries,
-        Err(e) => {
-            return Err(DustrError::PermissionDenied(format!(
-                "Permission denied: {}",
-                e
-            )));
-        }
+        Err(e) => match e.kind() {
+            io::ErrorKind::NotFound => {
+                return Err(DustrError::NotFound(format!(
+                    "Directory not found: {}",
+                    path
+                )));
+            }
+            io::ErrorKind::PermissionDenied => {
+                return Err(DustrError::PermissionDenied(format!(
+                    "Permission denied: {}",
+                    e
+                )));
+            }
+            _ => {
+                return Err(DustrError::OsError(format!(
+                    "Cannot read directory '{}': {}",
+                    path, e
+                )));
+            }
+        },
     };
 
     // Collect entries first to get count

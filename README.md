@@ -116,7 +116,7 @@ dustr --json .
 ## Requirements
 
 - **Python package**: Python >= 3.9
-- **Standalone binary**: Rust toolchain (for building from source), or install pre-built via `cargo install dustr-cli`
+- **Standalone binary**: Rust toolchain (for building from source), or install from crates.io via `cargo install dustr-cli`
 
 ## License
 

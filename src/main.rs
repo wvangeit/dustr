@@ -60,7 +60,7 @@ fn main() {
             process::exit(130);
         }
         Err(e) => {
-            eprintln!("dustr: {}", e);
+            eprintln!("dustr-cli: {}", e);
             process::exit(1);
         }
     }
