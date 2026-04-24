@@ -1,4 +1,4 @@
-.PHONY: build develop release test bench bench-save bench-compare check clean distclean lint lint-all fmt help
+.PHONY: build develop release test bench bench-save bench-compare check clean distclean lint lint-all fmt install help
 
 VENV := .venv
 BIN := $(VENV)/bin
@@ -39,6 +39,9 @@ bench-save: develop ## Run benchmarks and save as baseline
 
 bench-compare: develop ## Run benchmarks and compare against saved baseline
 	$(BIN)/pytest test_dustr.py -k bench --benchmark-only --benchmark-compare=0001_baseline -v
+
+install: ## Install standalone dustr-cli binary via cargo
+	cargo install --path .
 
 check: ## Run cargo check
 	cargo check
