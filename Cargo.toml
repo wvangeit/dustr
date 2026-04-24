@@ -1,6 +1,6 @@
 [package]
 name = "dustr-cli"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 description = "Fast Rust-based disk usage analyzer with histogram visualization"
 license = "LGPL-3.0-or-later"
