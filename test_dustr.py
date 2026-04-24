@@ -4,6 +4,10 @@
 import os
 import tempfile
 import shutil
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 from dustr._dustr import calculate_directory_sizes, get_file_type_indicator
 
@@ -184,6 +188,33 @@ def test_live():
         assert sizes_normal == sizes_live
 
 
+def test_ctrlc_exits_quickly():
+    """Test that Ctrl+C (SIGINT) causes dustr to exit promptly"""
+    # Run dustr on a large directory (root filesystem) so it takes a while
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "dustr", "/"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    # Let it start working
+    time.sleep(0.5)
+    assert proc.poll() is None, "Process exited too quickly, nothing to interrupt"
+
+    # Send SIGINT (same as Ctrl+C)
+    proc.send_signal(signal.SIGINT)
+    t0 = time.monotonic()
+
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise AssertionError("dustr did not exit within 10 seconds after SIGINT")
+
+    elapsed = time.monotonic() - t0
+    assert elapsed < 5, f"dustr took {elapsed:.1f}s to exit after SIGINT (expected < 5s)"
+
+
 if __name__ == "__main__":
     test_calculate_directory_sizes()
     test_calculate_directory_sizes_inodes()
@@ -194,4 +225,5 @@ if __name__ == "__main__":
     test_verbose()
     test_disk_usage_vs_apparent_size()
     test_live()
+    test_ctrlc_exits_quickly()
     print("All tests passed!")
