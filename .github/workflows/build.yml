@@ -100,7 +100,7 @@ jobs:
           --benchmark-json=benchmark-result.json
 
       - name: Store benchmark result
-        uses: benchmark-action/github-action-benchmark@v1
+        uses: benchmark-action/github-action-benchmark@v1.22.0
         with:
           tool: pytest
           output-file-path: benchmark-result.json
@@ -208,7 +208,7 @@ jobs:
           git push origin ${{ steps.bump.outputs.tag }}
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.bump.outputs.tag }}
           name: Release ${{ steps.bump.outputs.tag }}
@@ -244,7 +244,7 @@ jobs:
           manylinux: auto
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*.whl
@@ -259,7 +259,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: wheels-*
           path: dist
@@ -287,7 +287,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Authenticate with crates.io
-        uses: rust-lang/crates-io-auth-action@v1
+        uses: rust-lang/crates-io-auth-action@v1.0.4
         id: auth
 
       - name: Publish to crates.io
