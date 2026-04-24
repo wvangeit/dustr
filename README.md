@@ -30,44 +30,64 @@ Total directory size: 284.0 KB
 
 ## Installation
 
-### From PyPI
+### From PyPI (Python package)
 
 ```bash
 pip install dustr
 ```
 
+### From crates.io (standalone Rust binary, no Python needed)
+
+```bash
+cargo install dustr-cli
+```
+
+This installs the `dustr-cli` binary to `~/.cargo/bin/`.
+
 ### From source
 
 First, ensure you have Rust installed (see [rustup.rs](https://rustup.rs/)).
 
-Then install maturin:
+**Python package** (requires maturin):
 
 ```bash
 pip install maturin
-```
-
-Build and install the package:
-
-```bash
-cd dustr
 maturin develop  # For development
 # OR
-maturin build --release  # To build a wheel
-pip install target/wheels/dustr-*.whl
+maturin build --release && pip install target/wheels/dustr-*.whl
+```
+
+**Standalone binary**:
+
+```bash
+cargo install --path .
+# OR
+make install
 ```
 
 ## Usage
+
+### Python (`dustr`)
 
 ```bash
 dustr [OPTIONS] [DIRECTORY]
 ```
 
-Options:
+### Standalone binary (`dustr-cli`)
+
+```bash
+dustr-cli [OPTIONS] [DIRECTORY]
+```
+
+Both accept the same options:
 
 - `-i, --inodes`: Show inode count instead of size
 - `-g, --nogrouping`: Don't use thousand separators (for inode mode)
 - `-f, --noF`: Don't add file type indicators (`/` for directories, `@` for symlinks)
 - `-j, --json`: Output results as JSON
+- `-x, --cross-mounts`: Cross filesystem mount boundaries
+- `-v, --verbose`: Show directories being traversed
+- `-l, --live`: Live-update statistics table during traversal
 
 ### JSON output
 
@@ -94,8 +114,8 @@ dustr --json .
 
 ## Requirements
 
-- Python >= 3.9
-- Rust toolchain (for building from source)
+- **Python package**: Python >= 3.9
+- **Standalone binary**: Rust toolchain (for building from source), or install pre-built via `cargo install dustr-cli`
 
 ## License
 
