@@ -70,6 +70,48 @@ jobs:
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pip install maturin pytest pytest-benchmark
+
+      - name: Build and install
+        run: |
+          maturin build --release
+          pip install target/wheels/*.whl
+
+      - name: Run benchmarks
+        run: pytest test_dustr.py -k bench --benchmark-only
+          --benchmark-json=benchmark-result.json
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: pytest
+          output-file-path: benchmark-result.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.ref == 'refs/heads/main' || github.ref ==
+            'refs/heads/master' }}
+          comment-on-alert: true
+          alert-threshold: "150%"
+          fail-on-alert: false
+          comment-always: ${{ github.event_name == 'pull_request' }}
+
   test-wheels:
     name: Test wheel build on ${{ matrix.os }} (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
