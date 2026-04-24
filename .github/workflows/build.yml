@@ -94,6 +94,7 @@ jobs:
         run: |
           maturin build --release
           pip install target/wheels/*.whl
+          cargo build --release --bin dustr-cli
 
       - name: Run benchmarks
         run: pytest test_dustr.py -k bench --benchmark-only

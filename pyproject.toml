@@ -32,4 +32,4 @@ build-backend = "maturin"
 [tool.maturin]
 python-source = "python"
 module-name = "dustr._dustr"
-features = ["pyo3/extension-module"]
+features = ["extension-module"]

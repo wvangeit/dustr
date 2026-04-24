@@ -3,7 +3,6 @@
 
 import os
 import tempfile
-import shutil
 import signal
 import subprocess
 import sys
@@ -224,9 +223,9 @@ def test_ctrlc_exits_quickly():
             raise AssertionError("dustr did not exit within 10 seconds after SIGINT")
 
         elapsed = time.monotonic() - t0
-        assert (
-            elapsed < 5
-        ), f"dustr took {elapsed:.1f}s to exit after SIGINT (expected < 5s)"
+        assert elapsed < 5, (
+            f"dustr took {elapsed:.1f}s to exit after SIGINT (expected < 5s)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +293,72 @@ def test_bench_deep_tree(benchmark, tmp_path):
 
     _make_deep(tmp_path, depth=5)
     benchmark(calculate_directory_sizes, str(tmp_path), False)
+
+
+# ---------------------------------------------------------------------------
+# Rust binary benchmarks (run with: pytest test_dustr.py -k bench --benchmark-only)
+# ---------------------------------------------------------------------------
+
+DUSTR_CLI = Path(__file__).resolve().parent / "target" / "release" / "dustr-cli"
+
+
+def _run_dustr_cli(path):
+    """Run the dustr-cli binary on a directory."""
+    subprocess.run(
+        [str(DUSTR_CLI), str(path)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _skip_if_no_binary():
+    if not DUSTR_CLI.exists():
+        import pytest
+
+        pytest.skip(
+            f"dustr-cli binary not found at {DUSTR_CLI} "
+            "(run 'cargo build --release --bin dustr-cli' first)"
+        )
+
+
+def test_bench_cli_sizes_small(benchmark, tmp_path):
+    """Benchmark CLI binary size calculation: 10 dirs x 10 files"""
+    _skip_if_no_binary()
+    _make_tree(tmp_path, dirs=10, files_per_dir=10)
+    benchmark.pedantic(_run_dustr_cli, args=(tmp_path,), warmup_rounds=3, rounds=50)
+
+
+def test_bench_cli_sizes_medium(benchmark, tmp_path):
+    """Benchmark CLI binary size calculation: 50 dirs x 50 files"""
+    _skip_if_no_binary()
+    _make_tree(tmp_path, dirs=50, files_per_dir=50)
+    benchmark.pedantic(_run_dustr_cli, args=(tmp_path,), warmup_rounds=3, rounds=50)
+
+
+def test_bench_cli_sizes_large(benchmark, tmp_path):
+    """Benchmark CLI binary size calculation: 100 dirs x 100 files"""
+    _skip_if_no_binary()
+    _make_tree(tmp_path, dirs=100, files_per_dir=100)
+    benchmark.pedantic(_run_dustr_cli, args=(tmp_path,), warmup_rounds=3, rounds=30)
+
+
+def test_bench_cli_deep_tree(benchmark, tmp_path):
+    """Benchmark CLI binary on a deep directory tree: 5 levels, 5 dirs each"""
+    _skip_if_no_binary()
+
+    def _make_deep(parent, depth):
+        if depth == 0:
+            return
+        for i in range(5):
+            d = Path(parent) / f"d{depth}_{i}"
+            d.mkdir()
+            for j in range(5):
+                (d / f"f_{j}.bin").write_bytes(b"x" * 512)
+            _make_deep(d, depth - 1)
+
+    _make_deep(tmp_path, depth=5)
+    benchmark.pedantic(_run_dustr_cli, args=(tmp_path,), warmup_rounds=2, rounds=10)
 
 
 if __name__ == "__main__":
