@@ -18,9 +18,7 @@ mod python {
                 PyErr::new::<pyo3::exceptions::PyPermissionError, _>(msg)
             }
             DustrError::OsError(msg) => PyErr::new::<pyo3::exceptions::PyOSError, _>(msg),
-            DustrError::Cancelled => {
-                PyErr::new::<pyo3::exceptions::PyKeyboardInterrupt, _>("")
-            }
+            DustrError::Cancelled => PyErr::new::<pyo3::exceptions::PyKeyboardInterrupt, _>(""),
         }
     }
 

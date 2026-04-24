@@ -21,6 +21,7 @@ ensure-venv:
 
 develop: $(VENV) ensure-venv ## Build and install in current Python env (dev mode)
 	uv pip install -r requirements-dev.txt
+	$(BIN)/pre-commit install
 	$(BIN)/maturin develop
 
 build: ## Build release wheel
@@ -32,12 +33,15 @@ test: develop ## Run tests
 	$(BIN)/pytest test_dustr.py -v
 
 bench: develop ## Run benchmarks
+	cargo build --release --bin dustr-cli
 	$(BIN)/pytest test_dustr.py -k bench --benchmark-only -v
 
 bench-save: develop ## Run benchmarks and save as baseline
+	cargo build --release --bin dustr-cli
 	$(BIN)/pytest test_dustr.py -k bench --benchmark-only --benchmark-save=baseline -v
 
 bench-compare: develop ## Run benchmarks and compare against saved baseline
+	cargo build --release --bin dustr-cli
 	$(BIN)/pytest test_dustr.py -k bench --benchmark-only --benchmark-compare=0001_baseline -v
 
 install: ## Install standalone dustr-cli binary via cargo
