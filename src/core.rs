@@ -30,6 +30,45 @@ impl std::fmt::Display for DustrError {
     }
 }
 
+impl std::error::Error for DustrError {}
+
+/// Shared CLI arguments (used by both the binary and the Python entry point)
+#[derive(clap::Parser, Debug)]
+#[command(about = "Show disk usage statistics", long_about = None)]
+pub struct Cli {
+    /// Directory to analyze
+    #[arg(default_value = ".")]
+    pub dirname: String,
+
+    /// Count inodes instead of disk usage
+    #[arg(short, long)]
+    pub inodes: bool,
+
+    /// Don't use thousand separators
+    #[arg(short = 'g', long)]
+    pub nogrouping: bool,
+
+    /// Don't append file type indicators
+    #[arg(short = 'f', long = "noF")]
+    pub no_f: bool,
+
+    /// Output results as JSON
+    #[arg(short, long)]
+    pub json: bool,
+
+    /// Cross mount boundaries (by default stays on the same filesystem)
+    #[arg(short = 'x', long)]
+    pub cross_mounts: bool,
+
+    /// Show directories being traversed
+    #[arg(short, long)]
+    pub verbose: bool,
+
+    /// Live-update statistics table during traversal
+    #[arg(short, long)]
+    pub live: bool,
+}
+
 /// Calculate directory sizes for all items in a directory (parallel version)
 pub fn calculate_directory_sizes(
     path: &str,
@@ -173,9 +212,9 @@ pub fn calculate_directory_sizes(
         }
 
         let size = if use_inodes {
-            count_inodes_parallel(&file_path, &cancelled, base_dev, &current_entry)
+            count_inodes(&file_path, &cancelled, base_dev, &current_entry)
         } else {
-            calculate_size_kb_parallel(&file_path, &cancelled, base_dev, &current_entry)
+            calculate_size_kb(&file_path, &cancelled, base_dev, &current_entry)
         };
 
         if !cancelled.load(Ordering::Relaxed) {
@@ -237,8 +276,10 @@ pub fn calculate_directory_sizes(
     Ok(final_results)
 }
 
-/// Calculate total size in kilobytes using parallel jwalk
-fn calculate_size_kb_parallel(
+/// Calculate total size in kilobytes by walking the tree serially.
+/// The caller's rayon `par_iter` already provides top-level parallelism;
+/// using Serial here avoids nested thread-pool oversubscription.
+fn calculate_size_kb(
     path: &Path,
     cancelled: &AtomicBool,
     base_dev: Option<u64>,
@@ -257,7 +298,7 @@ fn calculate_size_kb_parallel(
     let mut total: u64 = 0;
     let mut count = 0;
     for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
+        .parallelism(jwalk::Parallelism::Serial)
         .into_iter()
         .filter_map(|e| e.ok())
     {
@@ -265,14 +306,14 @@ fn calculate_size_kb_parallel(
             break;
         }
         count += 1;
+        // Fetch metadata once and reuse for both the device check and block count.
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
         if let Some(dev) = base_dev {
-            match entry.metadata() {
-                Ok(m) => {
-                    if m.dev() != dev {
-                        continue;
-                    }
-                }
-                Err(_) => continue,
+            if meta.dev() != dev {
+                continue;
             }
         }
         if entry.file_type().is_dir() {
@@ -280,17 +321,16 @@ fn calculate_size_kb_parallel(
                 *current_entry.lock() = entry.path().to_string_lossy().to_string();
             }
         } else if entry.file_type().is_file() {
-            total += entry
-                .metadata()
-                .map(|m| (m.blocks() * 512).div_ceil(1024))
-                .unwrap_or(0);
+            total += (meta.blocks() * 512).div_ceil(1024);
         }
     }
     total
 }
 
-/// Count inodes using parallel jwalk
-fn count_inodes_parallel(
+/// Count inodes by walking the tree serially.
+/// The caller's rayon `par_iter` already provides top-level parallelism;
+/// using Serial here avoids nested thread-pool oversubscription.
+fn count_inodes(
     path: &Path,
     cancelled: &AtomicBool,
     base_dev: Option<u64>,
@@ -303,7 +343,7 @@ fn count_inodes_parallel(
     let mut count: u64 = 0;
     let mut iter_count = 0;
     for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus()))
+        .parallelism(jwalk::Parallelism::Serial)
         .into_iter()
         .filter_map(|e| e.ok())
     {
@@ -327,13 +367,6 @@ fn count_inodes_parallel(
         count += 1;
     }
     count
-}
-
-/// Get the number of CPUs for parallelism
-fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
 }
 
 /// Render the statistics table as a string (used for live display)
@@ -491,13 +524,24 @@ pub fn format_with_grouping(num: u64) -> String {
     result
 }
 
-/// Escape a string for JSON output
+/// Escape a string for JSON output, including all ASCII control characters.
 pub fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => result.push_str("\\\\"),
+            '"' => result.push_str("\\\""),
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                let _ = write!(result, "\\u{:04x}", c as u32);
+            }
+            c => result.push(c),
+        }
+    }
+    result
 }
 
 /// Print the complete disk usage analysis
@@ -514,56 +558,20 @@ pub fn print_disk_usage(
 ) -> Result<(), DustrError> {
     let max_marks = 20;
 
-    // Verify directory exists and is accessible
-    match fs::read_dir(dirname) {
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            eprintln!(
-                "Permission denied: Unable to access directory '{}'",
-                dirname
-            );
-            return Err(DustrError::PermissionDenied("Permission denied".into()));
-        }
-        Err(e) => {
-            eprintln!("Error accessing directory '{}': {}", dirname, e);
-            return Err(DustrError::OsError(format!(
-                "Error accessing directory: {}",
-                e
-            )));
-        }
-        Ok(_) => {}
-    }
-
     // Calculate file sizes
     let mut file_sizes: Vec<(String, u64)> = Vec::new();
-    let mut errors: Vec<(String, String)> = Vec::new();
-    let mut permission_error = false;
 
-    match calculate_directory_sizes(dirname, inodes, cross_mounts, verbose, live) {
-        Ok(raw_sizes) => {
-            for (filename, size) in raw_sizes {
-                let mut display_name = filename.clone();
+    let raw_sizes = calculate_directory_sizes(dirname, inodes, cross_mounts, verbose, live)?;
+    for (filename, size) in raw_sizes {
+        let mut display_name = filename.clone();
 
-                if !no_f {
-                    let full_path = Path::new(dirname).join(&filename);
-                    let indicator = get_file_type_indicator(&full_path.to_string_lossy());
-                    display_name.push_str(&indicator);
-                }
+        if !no_f {
+            let full_path = Path::new(dirname).join(&filename);
+            let indicator = get_file_type_indicator(&full_path.to_string_lossy());
+            display_name.push_str(&indicator);
+        }
 
-                file_sizes.push((display_name, size));
-            }
-        }
-        Err(DustrError::Cancelled) => {
-            return Err(DustrError::Cancelled);
-        }
-        Err(e) => {
-            let error_msg = e.to_string();
-            if error_msg.contains("Permission denied") {
-                errors.push(("Permission denied".to_string(), "<root>".to_string()));
-                permission_error = true;
-            } else {
-                errors.push((error_msg, "<root>".to_string()));
-            }
-        }
+        file_sizes.push((display_name, size));
     }
 
     // Sort by size
@@ -614,11 +622,6 @@ pub fn print_disk_usage(
         col0_name, "In %", "Histogram", "Name"
     );
 
-    // Print errors
-    for (error, filename) in &errors {
-        println!("{:<width$} {:<10}", error, filename, width = 22 + max_marks);
-    }
-
     // Print files
     for (filename, file_size) in &file_sizes {
         let nmarks = if max_size != 0 {
@@ -661,10 +664,6 @@ pub fn print_disk_usage(
         format_size(total_size)
     };
     println!("\nTotal directory size: {}", total_str);
-
-    if permission_error {
-        eprintln!("The Dustr has no permission to access certain subdirectories !\n");
-    }
 
     Ok(())
 }
