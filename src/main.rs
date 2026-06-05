@@ -1,48 +1,12 @@
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use std::process;
 
 mod core;
 
-/// Command-line arguments structure
-#[derive(Parser)]
-#[command(name = "dustr-cli")]
-#[command(about = "Show disk usage statistics", long_about = None)]
-struct Cli {
-    /// Directory to analyze
-    #[arg(default_value = ".")]
-    dirname: String,
-
-    /// Count inodes instead of disk usage
-    #[arg(short, long)]
-    inodes: bool,
-
-    /// Don't use thousand separators
-    #[arg(short = 'g', long)]
-    nogrouping: bool,
-
-    /// Don't append file type indicators
-    #[arg(short = 'f', long = "noF")]
-    no_f: bool,
-
-    /// Output results as JSON
-    #[arg(short, long)]
-    json: bool,
-
-    /// Cross mount boundaries (by default stays on the same filesystem)
-    #[arg(short = 'x', long)]
-    cross_mounts: bool,
-
-    /// Show directories being traversed
-    #[arg(short, long)]
-    verbose: bool,
-
-    /// Live-update statistics table during traversal
-    #[arg(short, long)]
-    live: bool,
-}
-
 fn main() {
-    let cli = Cli::parse();
+    // Parse using the shared Cli struct but display as "dustr-cli"
+    let matches = core::Cli::command().name("dustr-cli").get_matches();
+    let cli = core::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     match core::print_disk_usage(
         &cli.dirname,

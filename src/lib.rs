@@ -2,7 +2,6 @@ pub mod core;
 
 #[cfg(feature = "extension-module")]
 mod python {
-    use clap::Parser;
     use pyo3::prelude::*;
     use std::collections::HashMap;
 
@@ -81,49 +80,14 @@ mod python {
         result.map_err(|e| to_pyerr(py, e))
     }
 
-    /// Command-line arguments structure
-    #[derive(Parser)]
-    #[command(name = "dustr")]
-    #[command(about = "Show disk usage statistics", long_about = None)]
-    pub struct Cli {
-        /// Directory to analyze
-        #[arg(default_value = ".")]
-        pub dirname: String,
-
-        /// Count inodes instead of disk usage
-        #[arg(short, long)]
-        pub inodes: bool,
-
-        /// Don't use thousand separators
-        #[arg(short = 'g', long)]
-        pub nogrouping: bool,
-
-        /// Don't append file type indicators
-        #[arg(short = 'f', long = "noF")]
-        pub no_f: bool,
-
-        /// Output results as JSON
-        #[arg(short, long)]
-        pub json: bool,
-
-        /// Cross mount boundaries (by default stays on the same filesystem)
-        #[arg(short = 'x', long)]
-        pub cross_mounts: bool,
-
-        /// Show directories being traversed
-        #[arg(short, long)]
-        pub verbose: bool,
-
-        /// Live-update statistics table during traversal
-        #[arg(short, long)]
-        pub live: bool,
-    }
-
     /// Main entry point for the dustr command (called from Python)
     #[pyfunction]
     #[pyo3(signature = (args=vec![]))]
     fn main(py: Python, args: Vec<String>) -> PyResult<()> {
-        let cli = match Cli::try_parse_from(std::iter::once("dustr".to_string()).chain(args)) {
+        use clap::Parser;
+        let cli = match crate::core::Cli::try_parse_from(
+            std::iter::once("dustr".to_string()).chain(args),
+        ) {
             Ok(cli) => cli,
             Err(e) => {
                 eprintln!("{}", e);
