@@ -305,25 +305,34 @@ type WalkIter = <jwalk::WalkDirGeneric<((), EntryMeta)> as IntoIterator>::IntoIt
 /// (a directory may still contain readable descendants) but marked
 /// `EntryMeta::Unavailable` so they are not counted. When `base_dev` is
 /// `None`, no metadata is fetched at listing time at all (cross-mount walks
-/// stay stat-free until needed).
-fn walk_tree(path: &Path, base_dev: Option<u64>) -> WalkIter {
+/// stay stat-free until needed). Once `cancelled` is set, the callback stops
+/// issuing stat calls so cancellation is not delayed on huge directories.
+fn walk_tree(path: &Path, base_dev: Option<u64>, cancelled: &Arc<AtomicBool>) -> WalkIter {
     let mut walker =
         jwalk::WalkDirGeneric::<((), EntryMeta)>::new(path).parallelism(jwalk::Parallelism::Serial);
     if let Some(dev) = base_dev {
+        let cancelled = cancelled.clone();
         walker = walker.process_read_dir(move |_depth, _path, _state, entries| {
-            entries.retain_mut(|entry| match entry {
-                Ok(e) => match e.metadata() {
-                    Ok(meta) => {
-                        let foreign = meta.dev() != dev;
-                        e.client_state = EntryMeta::Fetched(meta);
-                        !foreign
-                    }
-                    Err(_) => {
-                        e.client_state = EntryMeta::Unavailable;
-                        true
-                    }
-                },
-                Err(_) => true,
+            entries.retain_mut(|entry| {
+                if cancelled.load(Ordering::Relaxed) {
+                    // No point in further syscalls: the walk loop breaks at
+                    // the next yielded entry regardless of entry state.
+                    return true;
+                }
+                match entry {
+                    Ok(e) => match e.metadata() {
+                        Ok(meta) => {
+                            let foreign = meta.dev() != dev;
+                            e.client_state = EntryMeta::Fetched(meta);
+                            !foreign
+                        }
+                        Err(_) => {
+                            e.client_state = EntryMeta::Unavailable;
+                            true
+                        }
+                    },
+                    Err(_) => true,
+                }
             });
         });
     }
@@ -335,32 +344,33 @@ fn walk_tree(path: &Path, base_dev: Option<u64>) -> WalkIter {
 /// using Serial here avoids nested thread-pool oversubscription.
 fn calculate_size_kb(
     path: &Path,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
     base_dev: Option<u64>,
     current_entry: Option<&Mutex<String>>,
 ) -> u64 {
-    if path.is_file() {
-        return fs::metadata(path)
-            .map(|m| (m.blocks() * 512).div_ceil(1024))
-            .unwrap_or(0);
-    }
-
-    if !path.is_dir() {
-        return 0;
-    }
-
-    // Reject foreign walk roots before starting the walk (see count_inodes
-    // for the rationale); a root whose metadata cannot be read is still
-    // walked, as it contributes no size itself either way.
+    // One stat of the root, following symlinks (as the file fast path
+    // always did). The device gate runs on the *resolved* root *before*
+    // the fast path, so a top-level symlink pointing onto another
+    // filesystem is not counted when cross-mount traversal is off.
+    let root_meta = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
     if let Some(dev) = base_dev {
-        if matches!(fs::symlink_metadata(path), Ok(m) if m.dev() != dev) {
+        if root_meta.dev() != dev {
             return 0;
         }
+    }
+    if root_meta.is_file() {
+        return (root_meta.blocks() * 512).div_ceil(1024);
+    }
+    if !root_meta.is_dir() {
+        return 0;
     }
 
     let mut total: u64 = 0;
     let mut count = 0;
-    for entry in walk_tree(path, base_dev).filter_map(|e| e.ok()) {
+    for entry in walk_tree(path, base_dev, cancelled).filter_map(|e| e.ok()) {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
@@ -391,32 +401,35 @@ fn calculate_size_kb(
 /// using Serial here avoids nested thread-pool oversubscription.
 fn count_inodes(
     path: &Path,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
     base_dev: Option<u64>,
     current_entry: Option<&Mutex<String>>,
 ) -> u64 {
-    if !path.is_dir() {
-        return 1;
-    }
-
-    // The walk root is not part of any directory listing, so it is not
-    // covered by the listing-level pruning in walk_tree. Reject foreign
-    // roots *before* starting the walk: enumerating a foreign mount just to
-    // hunt for (bind-mounted) base-device entries deep inside would defeat
-    // the pruning. If the root's metadata cannot be read, walk normally but
-    // skip only the root itself from the count.
+    // The root entry is not part of any directory listing, so it is not
+    // covered by the listing-level pruning in walk_tree. Device-check it
+    // here (on its own inode), *before* the non-directory fast path: a
+    // foreign root is rejected for files and directories alike, since
+    // hunting for (bind-mounted) base-device entries deep inside a foreign
+    // mount would defeat the pruning. If the root's metadata cannot be
+    // read, walk normally but skip only the root itself from the count.
     let mut root_countable = true;
-    if let Some(dev) = base_dev {
-        match fs::symlink_metadata(path) {
+    match base_dev {
+        Some(dev) => match fs::symlink_metadata(path) {
             Ok(m) if m.dev() != dev => return 0,
+            Ok(m) if !m.is_dir() => return 1,
             Ok(_) => {}
             Err(_) => root_countable = false,
+        },
+        None => {
+            if !path.is_dir() {
+                return 1;
+            }
         }
     }
 
     let mut count: u64 = 0;
     let mut iter_count = 0;
-    for entry in walk_tree(path, base_dev).filter_map(|e| e.ok()) {
+    for entry in walk_tree(path, base_dev, cancelled).filter_map(|e| e.ok()) {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
