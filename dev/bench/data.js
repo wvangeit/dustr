@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780671555652,
+  "lastUpdate": 1790335284069,
   "repoUrl": "https://github.com/wvangeit/dustr",
   "entries": {
     "Benchmark": [
@@ -421,6 +421,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0006613640257646602",
             "extra": "mean: 53.10400619999882 msec\nrounds: 10"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "werner.vangeit@gmail.com",
+            "name": "Werner Van Geit",
+            "username": "wvangeit"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "48418537bc6a4930fdfd6c39f8614a4f56904808",
+          "message": "Performance improvements (#27)\n\n* Performance improvements\n\n* Fix traversing external dirs\n\n* Potential fix for pull request finding 'Make EntryMeta cloneable for walker state'\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>\n\n* Fix for walk\n\n* Address comments\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-09-25T13:20:30+02:00",
+          "tree_id": "d370f5ba53651986147d1ee16ded1c5d4cb992a3",
+          "url": "https://github.com/wvangeit/dustr/commit/48418537bc6a4930fdfd6c39f8614a4f56904808"
+        },
+        "date": 1790335283570,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "test_dustr.py::test_bench_sizes_small",
+            "value": 3625.149239086419,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001696732942781329",
+            "extra": "mean: 275.850712356331 usec\nrounds: 1481"
+          },
+          {
+            "name": "test_dustr.py::test_bench_sizes_medium",
+            "value": 360.10827608532156,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001832516733077161",
+            "extra": "mean: 2.776942565360722 msec\nrounds: 306"
+          },
+          {
+            "name": "test_dustr.py::test_bench_sizes_large",
+            "value": 101.15001992734604,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002236155249527146",
+            "extra": "mean: 9.886305516482144 msec\nrounds: 91"
+          },
+          {
+            "name": "test_dustr.py::test_bench_inodes_small",
+            "value": 3663.1150220945324,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000015365374251851534",
+            "extra": "mean: 272.9917007706218 usec\nrounds: 2727"
+          },
+          {
+            "name": "test_dustr.py::test_bench_inodes_medium",
+            "value": 355.8112995874452,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011585542888847028",
+            "extra": "mean: 2.810478478787707 msec\nrounds: 330"
+          },
+          {
+            "name": "test_dustr.py::test_bench_inodes_large",
+            "value": 100.57774967150935,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002611790824074231",
+            "extra": "mean: 9.942556910112195 msec\nrounds: 89"
+          },
+          {
+            "name": "test_dustr.py::test_bench_deep_tree",
+            "value": 20.241958371461678,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002431921402005917",
+            "extra": "mean: 49.40233457894369 msec\nrounds: 19"
+          },
+          {
+            "name": "test_dustr.py::test_bench_cli_sizes_small",
+            "value": 633.0501425739848,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004461602296171863",
+            "extra": "mean: 1.5796536999960153 msec\nrounds: 50"
+          },
+          {
+            "name": "test_dustr.py::test_bench_cli_sizes_medium",
+            "value": 218.25536404881473,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021132733001715716",
+            "extra": "mean: 4.581788880003614 msec\nrounds: 50"
+          },
+          {
+            "name": "test_dustr.py::test_bench_cli_sizes_large",
+            "value": 76.96625499211159,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012945081808075258",
+            "extra": "mean: 12.992707000002687 msec\nrounds: 30"
+          },
+          {
+            "name": "test_dustr.py::test_bench_cli_deep_tree",
+            "value": 19.492976454465385,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009482425617658612",
+            "extra": "mean: 51.3005287999988 msec\nrounds: 10"
           }
         ]
       }
