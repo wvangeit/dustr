@@ -279,32 +279,49 @@ pub fn calculate_directory_sizes(
     Ok(final_results)
 }
 
-/// Per-entry state holding the metadata fetched during the directory
-/// listing, so the walk does not need to stat the same path again.
-type MetaState = Option<fs::Metadata>;
+/// Per-entry metadata state recorded by `walk_tree` during the directory
+/// listing, distinguishing "not looked up" from "lookup failed" so that a
+/// failed stat never silently prunes a traversable subtree.
+#[derive(Debug, Default)]
+enum EntryMeta {
+    /// Not looked up at listing time (cross-mount walks).
+    #[default]
+    NotFetched,
+    /// Looked up successfully at listing time; device already checked.
+    Fetched(fs::Metadata),
+    /// Lookup failed. The entry itself cannot be counted, but if it is a
+    /// directory its subtree stays reachable.
+    Unavailable,
+}
 
 /// Iterator type produced by the walk builder's `into_iter()`.
-type WalkIter = <jwalk::WalkDirGeneric<((), MetaState)> as IntoIterator>::IntoIter;
+type WalkIter = <jwalk::WalkDirGeneric<((), EntryMeta)> as IntoIterator>::IntoIter;
 
 /// Build a serial jwalk iterator over `path`, caching each entry's metadata
 /// in its client state. When `base_dev` is set, foreign-filesystem entries
 /// are dropped from each directory listing *before* it is walked, so mount
 /// points are pruned at the directory level instead of being fully traversed
-/// and filtered entry-by-entry. When it is `None`, no metadata is fetched at
-/// listing time at all (cross-mount walks stay stat-free until needed).
+/// and filtered entry-by-entry. Entries whose metadata lookup fails are kept
+/// (a directory may still contain readable descendants) but marked
+/// `EntryMeta::Unavailable` so they are not counted. When `base_dev` is
+/// `None`, no metadata is fetched at listing time at all (cross-mount walks
+/// stay stat-free until needed).
 fn walk_tree(path: &Path, base_dev: Option<u64>) -> WalkIter {
     let mut walker =
-        jwalk::WalkDirGeneric::<((), MetaState)>::new(path).parallelism(jwalk::Parallelism::Serial);
+        jwalk::WalkDirGeneric::<((), EntryMeta)>::new(path).parallelism(jwalk::Parallelism::Serial);
     if let Some(dev) = base_dev {
         walker = walker.process_read_dir(move |_depth, _path, _state, entries| {
             entries.retain_mut(|entry| match entry {
                 Ok(e) => match e.metadata() {
                     Ok(meta) => {
-                        let keep = meta.dev() == dev;
-                        e.client_state = Some(meta);
-                        keep
+                        let foreign = meta.dev() != dev;
+                        e.client_state = EntryMeta::Fetched(meta);
+                        !foreign
                     }
-                    Err(_) => false,
+                    Err(_) => {
+                        e.client_state = EntryMeta::Unavailable;
+                        true
+                    }
                 },
                 Err(_) => true,
             });
@@ -340,8 +357,14 @@ fn calculate_size_kb(
         }
         count += 1;
         if entry.file_type().is_file() {
-            // Reuse the metadata already fetched for the listing where present.
-            let meta = entry.client_state.clone().or_else(|| entry.metadata().ok());
+            let meta = match entry.client_state {
+                EntryMeta::Fetched(ref m) => Some(m.clone()),
+                // Lookup failed at listing time: skip counting this entry
+                // (its subtree, if any, is still walked).
+                EntryMeta::Unavailable => None,
+                // Cross-mount walk: no listing-time stat, fetch on demand.
+                EntryMeta::NotFetched => entry.metadata().ok(),
+            };
             if let Some(meta) = meta {
                 total += (meta.blocks() * 512).div_ceil(1024);
             }
@@ -382,6 +405,12 @@ fn count_inodes(
                     _ => continue,
                 }
             }
+        }
+        // Entries whose device check failed cannot be attributed to the base
+        // filesystem: skip them from the count, but keep walking (a directory
+        // here may still contain countable descendants).
+        if matches!(entry.client_state, EntryMeta::Unavailable) {
+            continue;
         }
         iter_count += 1;
         if entry.file_type().is_dir() && iter_count % 100 == 0 {
