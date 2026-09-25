@@ -1,4 +1,3 @@
-use jwalk::WalkDir as JWalkDir;
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use signal_hook::consts::SIGINT;
@@ -138,6 +137,9 @@ pub fn calculate_directory_sizes(
     let cancelled = Arc::new(AtomicBool::new(false));
     let results: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
     let current_entry: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // current_entry is only read by the non-live progress printer; skip all
+    // lock traffic while walking when nobody would ever read it.
+    let track_entry = verbose && !live;
 
     // Register OS signal handler to set cancelled flag directly on Ctrl+C.
     let signal_id = match signal_hook::flag::register(SIGINT, cancelled.clone()) {
@@ -207,14 +209,15 @@ pub fn calculate_directory_sizes(
         let file_name = entry.file_name().to_string_lossy().to_string();
         let file_path = entry.path();
 
-        if verbose {
+        if track_entry {
             *current_entry.lock() = file_name.clone();
         }
 
+        let tracked_entry = track_entry.then_some(&*current_entry);
         let size = if use_inodes {
-            count_inodes(&file_path, &cancelled, base_dev, &current_entry)
+            count_inodes(&file_path, &cancelled, base_dev, tracked_entry)
         } else {
-            calculate_size_kb(&file_path, &cancelled, base_dev, &current_entry)
+            calculate_size_kb(&file_path, &cancelled, base_dev, tracked_entry)
         };
 
         if !cancelled.load(Ordering::Relaxed) {
@@ -224,7 +227,7 @@ pub fn calculate_directory_sizes(
         // Update progress periodically
         let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
         if !live && current.is_multiple_of(10) {
-            let entry_name = if verbose {
+            let entry_name = if track_entry {
                 Some(current_entry.lock().clone())
             } else {
                 None
@@ -276,6 +279,40 @@ pub fn calculate_directory_sizes(
     Ok(final_results)
 }
 
+/// Per-entry state holding the metadata fetched during the directory
+/// listing, so the walk does not need to stat the same path again.
+type MetaState = Option<fs::Metadata>;
+
+/// Iterator type produced by the walk builder's `into_iter()`.
+type WalkIter = <jwalk::WalkDirGeneric<((), MetaState)> as IntoIterator>::IntoIter;
+
+/// Build a serial jwalk iterator over `path`, caching each entry's metadata
+/// in its client state. When `base_dev` is set, foreign-filesystem entries
+/// are dropped from each directory listing *before* it is walked, so mount
+/// points are pruned at the directory level instead of being fully traversed
+/// and filtered entry-by-entry. When it is `None`, no metadata is fetched at
+/// listing time at all (cross-mount walks stay stat-free until needed).
+fn walk_tree(path: &Path, base_dev: Option<u64>) -> WalkIter {
+    let mut walker =
+        jwalk::WalkDirGeneric::<((), MetaState)>::new(path).parallelism(jwalk::Parallelism::Serial);
+    if let Some(dev) = base_dev {
+        walker = walker.process_read_dir(move |_depth, _path, _state, entries| {
+            entries.retain_mut(|entry| match entry {
+                Ok(e) => match e.metadata() {
+                    Ok(meta) => {
+                        let keep = meta.dev() == dev;
+                        e.client_state = Some(meta);
+                        keep
+                    }
+                    Err(_) => false,
+                },
+                Err(_) => true,
+            });
+        });
+    }
+    walker.into_iter()
+}
+
 /// Calculate total size in kilobytes by walking the tree serially.
 /// The caller's rayon `par_iter` already provides top-level parallelism;
 /// using Serial here avoids nested thread-pool oversubscription.
@@ -283,7 +320,7 @@ fn calculate_size_kb(
     path: &Path,
     cancelled: &AtomicBool,
     base_dev: Option<u64>,
-    current_entry: &Mutex<String>,
+    current_entry: Option<&Mutex<String>>,
 ) -> u64 {
     if path.is_file() {
         return fs::metadata(path)
@@ -297,31 +334,21 @@ fn calculate_size_kb(
 
     let mut total: u64 = 0;
     let mut count = 0;
-    for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::Serial)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in walk_tree(path, base_dev).filter_map(|e| e.ok()) {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
         count += 1;
-        // Fetch metadata once and reuse for both the device check and block count.
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if let Some(dev) = base_dev {
-            if meta.dev() != dev {
-                continue;
+        if entry.file_type().is_file() {
+            // Reuse the metadata already fetched for the listing where present.
+            let meta = entry.client_state.clone().or_else(|| entry.metadata().ok());
+            if let Some(meta) = meta {
+                total += (meta.blocks() * 512).div_ceil(1024);
             }
-        }
-        if entry.file_type().is_dir() {
-            if count % 100 == 0 {
+        } else if entry.file_type().is_dir() && count % 100 == 0 {
+            if let Some(current_entry) = current_entry {
                 *current_entry.lock() = entry.path().to_string_lossy().to_string();
             }
-        } else if entry.file_type().is_file() {
-            total += (meta.blocks() * 512).div_ceil(1024);
         }
     }
     total
@@ -334,7 +361,7 @@ fn count_inodes(
     path: &Path,
     cancelled: &AtomicBool,
     base_dev: Option<u64>,
-    current_entry: &Mutex<String>,
+    current_entry: Option<&Mutex<String>>,
 ) -> u64 {
     if !path.is_dir() {
         return 1;
@@ -342,27 +369,25 @@ fn count_inodes(
 
     let mut count: u64 = 0;
     let mut iter_count = 0;
-    for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::Serial)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in walk_tree(path, base_dev).filter_map(|e| e.ok()) {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
-        iter_count += 1;
-        if let Some(dev) = base_dev {
-            match entry.metadata() {
-                Ok(m) => {
-                    if m.dev() != dev {
-                        continue;
-                    }
+        // The walk root is not part of any directory listing, so it is not
+        // covered by the pruning in walk_tree; device-check it here.
+        if entry.depth() == 0 {
+            if let Some(dev) = base_dev {
+                match entry.metadata() {
+                    Ok(m) if m.dev() == dev => {}
+                    _ => continue,
                 }
-                Err(_) => continue,
             }
         }
+        iter_count += 1;
         if entry.file_type().is_dir() && iter_count % 100 == 0 {
-            *current_entry.lock() = entry.path().to_string_lossy().to_string();
+            if let Some(current_entry) = current_entry {
+                *current_entry.lock() = entry.path().to_string_lossy().to_string();
+            }
         }
         count += 1;
     }
