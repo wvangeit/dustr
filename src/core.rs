@@ -1,4 +1,3 @@
-use jwalk::WalkDir as JWalkDir;
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use signal_hook::consts::SIGINT;
@@ -138,6 +137,9 @@ pub fn calculate_directory_sizes(
     let cancelled = Arc::new(AtomicBool::new(false));
     let results: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
     let current_entry: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // current_entry is only read by the non-live progress printer; skip all
+    // lock traffic while walking when nobody would ever read it.
+    let track_entry = verbose && !live;
 
     // Register OS signal handler to set cancelled flag directly on Ctrl+C.
     let signal_id = match signal_hook::flag::register(SIGINT, cancelled.clone()) {
@@ -207,14 +209,15 @@ pub fn calculate_directory_sizes(
         let file_name = entry.file_name().to_string_lossy().to_string();
         let file_path = entry.path();
 
-        if verbose {
+        if track_entry {
             *current_entry.lock() = file_name.clone();
         }
 
+        let tracked_entry = track_entry.then_some(&*current_entry);
         let size = if use_inodes {
-            count_inodes(&file_path, &cancelled, base_dev, &current_entry)
+            count_inodes(&file_path, &cancelled, base_dev, tracked_entry)
         } else {
-            calculate_size_kb(&file_path, &cancelled, base_dev, &current_entry)
+            calculate_size_kb(&file_path, &cancelled, base_dev, tracked_entry)
         };
 
         if !cancelled.load(Ordering::Relaxed) {
@@ -224,7 +227,7 @@ pub fn calculate_directory_sizes(
         // Update progress periodically
         let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
         if !live && current.is_multiple_of(10) {
-            let entry_name = if verbose {
+            let entry_name = if track_entry {
                 Some(current_entry.lock().clone())
             } else {
                 None
@@ -276,52 +279,118 @@ pub fn calculate_directory_sizes(
     Ok(final_results)
 }
 
+/// Per-entry metadata state recorded by `walk_tree` during the directory
+/// listing, distinguishing "not looked up" from "lookup failed" so that a
+/// failed stat never silently prunes a traversable subtree.
+#[derive(Debug, Default, Clone)]
+enum EntryMeta {
+    /// Not looked up at listing time (cross-mount walks).
+    #[default]
+    NotFetched,
+    /// Looked up successfully at listing time; device already checked.
+    Fetched(fs::Metadata),
+    /// Lookup failed. The entry itself cannot be counted, but if it is a
+    /// directory its subtree stays reachable.
+    Unavailable,
+}
+
+/// Iterator type produced by the walk builder's `into_iter()`.
+type WalkIter = <jwalk::WalkDirGeneric<((), EntryMeta)> as IntoIterator>::IntoIter;
+
+/// Build a serial jwalk iterator over `path`, caching each entry's metadata
+/// in its client state. When `base_dev` is set, foreign-filesystem entries
+/// are dropped from each directory listing *before* it is walked, so mount
+/// points are pruned at the directory level instead of being fully traversed
+/// and filtered entry-by-entry. Entries whose metadata lookup fails are kept
+/// (a directory may still contain readable descendants) but marked
+/// `EntryMeta::Unavailable` so they are not counted. When `base_dev` is
+/// `None`, no metadata is fetched at listing time at all (cross-mount walks
+/// stay stat-free until needed). Once `cancelled` is set, the callback stops
+/// issuing stat calls so cancellation is not delayed on huge directories.
+fn walk_tree(path: &Path, base_dev: Option<u64>, cancelled: &Arc<AtomicBool>) -> WalkIter {
+    let mut walker =
+        jwalk::WalkDirGeneric::<((), EntryMeta)>::new(path).parallelism(jwalk::Parallelism::Serial);
+    if let Some(dev) = base_dev {
+        let cancelled = cancelled.clone();
+        walker = walker.process_read_dir(move |_depth, _path, _state, entries| {
+            entries.retain_mut(|entry| {
+                if cancelled.load(Ordering::Relaxed) {
+                    // No point in further syscalls: the walk loop breaks at
+                    // the next yielded entry regardless of entry state.
+                    return true;
+                }
+                match entry {
+                    Ok(e) => match e.metadata() {
+                        Ok(meta) => {
+                            let foreign = meta.dev() != dev;
+                            e.client_state = EntryMeta::Fetched(meta);
+                            !foreign
+                        }
+                        Err(_) => {
+                            e.client_state = EntryMeta::Unavailable;
+                            true
+                        }
+                    },
+                    Err(_) => true,
+                }
+            });
+        });
+    }
+    walker.into_iter()
+}
+
 /// Calculate total size in kilobytes by walking the tree serially.
 /// The caller's rayon `par_iter` already provides top-level parallelism;
 /// using Serial here avoids nested thread-pool oversubscription.
 fn calculate_size_kb(
     path: &Path,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
     base_dev: Option<u64>,
-    current_entry: &Mutex<String>,
+    current_entry: Option<&Mutex<String>>,
 ) -> u64 {
-    if path.is_file() {
-        return fs::metadata(path)
-            .map(|m| (m.blocks() * 512).div_ceil(1024))
-            .unwrap_or(0);
+    // One stat of the root, following symlinks (as the file fast path
+    // always did). The device gate runs on the *resolved* root *before*
+    // the fast path, so a top-level symlink pointing onto another
+    // filesystem is not counted when cross-mount traversal is off.
+    let root_meta = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    if let Some(dev) = base_dev {
+        if root_meta.dev() != dev {
+            return 0;
+        }
     }
-
-    if !path.is_dir() {
+    if root_meta.is_file() {
+        return (root_meta.blocks() * 512).div_ceil(1024);
+    }
+    if !root_meta.is_dir() {
         return 0;
     }
 
     let mut total: u64 = 0;
     let mut count = 0;
-    for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::Serial)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in walk_tree(path, base_dev, cancelled).filter_map(|e| e.ok()) {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
         count += 1;
-        // Fetch metadata once and reuse for both the device check and block count.
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if let Some(dev) = base_dev {
-            if meta.dev() != dev {
-                continue;
+        if entry.file_type().is_file() {
+            let meta = match entry.client_state {
+                EntryMeta::Fetched(ref m) => Some(m.clone()),
+                // Lookup failed at listing time: skip counting this entry
+                // (its subtree, if any, is still walked).
+                EntryMeta::Unavailable => None,
+                // Cross-mount walk: no listing-time stat, fetch on demand.
+                EntryMeta::NotFetched => entry.metadata().ok(),
+            };
+            if let Some(meta) = meta {
+                total += (meta.blocks() * 512).div_ceil(1024);
             }
-        }
-        if entry.file_type().is_dir() {
-            if count % 100 == 0 {
+        } else if entry.file_type().is_dir() && count % 100 == 0 {
+            if let Some(current_entry) = current_entry {
                 *current_entry.lock() = entry.path().to_string_lossy().to_string();
             }
-        } else if entry.file_type().is_file() {
-            total += (meta.blocks() * 512).div_ceil(1024);
         }
     }
     total
@@ -332,37 +401,52 @@ fn calculate_size_kb(
 /// using Serial here avoids nested thread-pool oversubscription.
 fn count_inodes(
     path: &Path,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
     base_dev: Option<u64>,
-    current_entry: &Mutex<String>,
+    current_entry: Option<&Mutex<String>>,
 ) -> u64 {
-    if !path.is_dir() {
-        return 1;
+    // The root entry is not part of any directory listing, so it is not
+    // covered by the listing-level pruning in walk_tree. Device-check it
+    // here (on its own inode), *before* the non-directory fast path: a
+    // foreign root is rejected for files and directories alike, since
+    // hunting for (bind-mounted) base-device entries deep inside a foreign
+    // mount would defeat the pruning. If the root's metadata cannot be
+    // read, walk normally but skip only the root itself from the count.
+    let mut root_countable = true;
+    match base_dev {
+        Some(dev) => match fs::symlink_metadata(path) {
+            Ok(m) if m.dev() != dev => return 0,
+            Ok(m) if !m.is_dir() => return 1,
+            Ok(_) => {}
+            Err(_) => root_countable = false,
+        },
+        None => {
+            if !path.is_dir() {
+                return 1;
+            }
+        }
     }
 
     let mut count: u64 = 0;
     let mut iter_count = 0;
-    for entry in JWalkDir::new(path)
-        .parallelism(jwalk::Parallelism::Serial)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in walk_tree(path, base_dev, cancelled).filter_map(|e| e.ok()) {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
-        iter_count += 1;
-        if let Some(dev) = base_dev {
-            match entry.metadata() {
-                Ok(m) => {
-                    if m.dev() != dev {
-                        continue;
-                    }
-                }
-                Err(_) => continue,
-            }
+        if entry.depth() == 0 && !root_countable {
+            continue;
         }
+        // Entries whose device check failed cannot be attributed to the base
+        // filesystem: skip them from the count, but keep walking (a directory
+        // here may still contain countable descendants).
+        if matches!(entry.client_state, EntryMeta::Unavailable) {
+            continue;
+        }
+        iter_count += 1;
         if entry.file_type().is_dir() && iter_count % 100 == 0 {
-            *current_entry.lock() = entry.path().to_string_lossy().to_string();
+            if let Some(current_entry) = current_entry {
+                *current_entry.lock() = entry.path().to_string_lossy().to_string();
+            }
         }
         count += 1;
     }
