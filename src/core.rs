@@ -282,7 +282,7 @@ pub fn calculate_directory_sizes(
 /// Per-entry metadata state recorded by `walk_tree` during the directory
 /// listing, distinguishing "not looked up" from "lookup failed" so that a
 /// failed stat never silently prunes a traversable subtree.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 enum EntryMeta {
     /// Not looked up at listing time (cross-mount walks).
     #[default]
