@@ -349,6 +349,15 @@ fn calculate_size_kb(
         return 0;
     }
 
+    // Reject foreign walk roots before starting the walk (see count_inodes
+    // for the rationale); a root whose metadata cannot be read is still
+    // walked, as it contributes no size itself either way.
+    if let Some(dev) = base_dev {
+        if matches!(fs::symlink_metadata(path), Ok(m) if m.dev() != dev) {
+            return 0;
+        }
+    }
+
     let mut total: u64 = 0;
     let mut count = 0;
     for entry in walk_tree(path, base_dev).filter_map(|e| e.ok()) {
@@ -390,21 +399,29 @@ fn count_inodes(
         return 1;
     }
 
+    // The walk root is not part of any directory listing, so it is not
+    // covered by the listing-level pruning in walk_tree. Reject foreign
+    // roots *before* starting the walk: enumerating a foreign mount just to
+    // hunt for (bind-mounted) base-device entries deep inside would defeat
+    // the pruning. If the root's metadata cannot be read, walk normally but
+    // skip only the root itself from the count.
+    let mut root_countable = true;
+    if let Some(dev) = base_dev {
+        match fs::symlink_metadata(path) {
+            Ok(m) if m.dev() != dev => return 0,
+            Ok(_) => {}
+            Err(_) => root_countable = false,
+        }
+    }
+
     let mut count: u64 = 0;
     let mut iter_count = 0;
     for entry in walk_tree(path, base_dev).filter_map(|e| e.ok()) {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
-        // The walk root is not part of any directory listing, so it is not
-        // covered by the pruning in walk_tree; device-check it here.
-        if entry.depth() == 0 {
-            if let Some(dev) = base_dev {
-                match entry.metadata() {
-                    Ok(m) if m.dev() == dev => {}
-                    _ => continue,
-                }
-            }
+        if entry.depth() == 0 && !root_countable {
+            continue;
         }
         // Entries whose device check failed cannot be attributed to the base
         // filesystem: skip them from the count, but keep walking (a directory
